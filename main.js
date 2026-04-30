@@ -175,10 +175,11 @@ async function getAbuseIpDbInfo(ip, apiKey) {
   // Returns abuseConfidenceScore (0-100) based on community abuse reports.
   // Catches "burned" residential proxies that have been reported for spam/bot/scan.
   try {
+    // maxAgeInDays=365 catches a full year of abuse history. Free tier max.
     const res = await httpGet(
       `https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(
         ip
-      )}&maxAgeInDays=90&verbose`,
+      )}&maxAgeInDays=365&verbose`,
       {
         headers: { Key: apiKey, Accept: 'application/json' },
         timeoutMs: 15000,

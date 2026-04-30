@@ -159,6 +159,12 @@ function renderTypeChips(d) {
     chips.push(
       `<span class="chip chip-abuse" title="${escapeAttr(tt)}">${d.abuseReports} rapor</span>`
     );
+  } else if (d.abuseLastReportedAt) {
+    // Old report outside aggregation window — still a soft signal
+    const dateStr = d.abuseLastReportedAt.split('T')[0];
+    chips.push(
+      `<span class="chip chip-hosting" title="Eski abuse raporu, son: ${escapeAttr(dateStr)}">eski rapor</span>`
+    );
   }
   if (chips.length === 0) {
     const label = d.connectionType || d.abuseUsageType || 'Residential';
@@ -190,8 +196,11 @@ function renderStatus(d) {
   if (hardFlag || (hasScore && d.score >= 85))
     return '<span class="badge badge-bad">VPN/Proxy</span>';
 
-  // Suspicious: hosting/datacenter or mid score
-  if (d.isHosting || (hasScore && d.score >= 50))
+  // Suspicious: hosting/datacenter, mid score, or any abuse history
+  const hasAbuseHistory =
+    (typeof d.abuseReports === 'number' && d.abuseReports > 0) ||
+    !!d.abuseLastReportedAt;
+  if (d.isHosting || hasAbuseHistory || (hasScore && d.score >= 50))
     return '<span class="badge badge-warn">Şüpheli</span>';
 
   if (d.status === 'ok')
