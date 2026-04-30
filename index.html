@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Proxy Checker</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo">PC</div>
+          <div>
+            <div class="title">Proxy Checker</div>
+            <div class="subtitle">getipintel.net üzerinden VPN/Proxy skor kontrolü</div>
+          </div>
+        </div>
+        <div class="email-field">
+          <label for="email">Contact email</label>
+          <input id="email" type="email" placeholder="email@example.com" />
+        </div>
+      </header>
+
+      <section class="input-card">
+        <label for="proxies">Proxy listesi</label>
+        <div class="hint">
+          Her satıra bir proxy. Format:
+          <code>socks5://user:pass@host:port</code> &nbsp;veya&nbsp;
+          <code>http://user:pass@host:port</code>
+        </div>
+        <textarea
+          id="proxies"
+          rows="8"
+          spellcheck="false"
+          placeholder="socks5://kullanici:sifre@connect.example.com:10000"
+        ></textarea>
+        <div class="actions">
+          <button id="check-btn" class="primary">Kontrol Et</button>
+          <button id="clear-btn">Temizle</button>
+          <button id="export-btn" disabled>CSV Olarak Dışa Aktar</button>
+          <div class="spacer"></div>
+          <span id="proxy-count" class="muted">0 proxy</span>
+        </div>
+      </section>
+
+      <section class="status-card">
+        <div class="status-row">
+          <span id="status-text" class="muted">Hazır.</span>
+          <span id="counter" class="muted"></span>
+        </div>
+        <div class="progress-bar">
+          <div id="progress-fill"></div>
+        </div>
+      </section>
+
+      <section class="results-card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="col-num">#</th>
+                <th class="col-proxy">Proxy</th>
+                <th class="col-ip">Tespit Edilen IP</th>
+                <th class="col-country">Ülke</th>
+                <th class="col-isp">ISP</th>
+                <th class="col-score">Skor</th>
+                <th class="col-status">Durum</th>
+              </tr>
+            </thead>
+            <tbody id="results-body">
+              <tr class="empty">
+                <td colspan="7">Henüz sonuç yok. Proxy listesini yapıştırıp <b>Kontrol Et</b>'e bas.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="legend">
+          <span><i class="dot dot-ok"></i> Skor &lt; 0.5 (temiz)</span>
+          <span><i class="dot dot-warn"></i> 0.5 – 0.9 (şüpheli)</span>
+          <span><i class="dot dot-bad"></i> &gt; 0.9 (proxy/VPN tespit edildi)</span>
+        </div>
+      </section>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

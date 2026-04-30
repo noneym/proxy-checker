@@ -1,0 +1,16 @@
+{
+  "name": "proxy-checker",
+  "version": "1.0.0",
+  "description": "Proxy/VPN IP score checker using getipintel.net",
+  "main": "main.js",
+  "author": "berksay",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^28.2.0"
+  },
+  "dependencies": {
+    "socks-proxy-agent": "^8.0.2"
+  }
+}
