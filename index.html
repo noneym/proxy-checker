@@ -64,21 +64,24 @@
                 <th class="col-ip">Tespit Edilen IP</th>
                 <th class="col-country">Ülke</th>
                 <th class="col-isp">ISP</th>
+                <th class="col-type">Tip</th>
                 <th class="col-score">Skor</th>
                 <th class="col-status">Durum</th>
               </tr>
             </thead>
             <tbody id="results-body">
               <tr class="empty">
-                <td colspan="7">Henüz sonuç yok. Proxy listesini yapıştırıp <b>Kontrol Et</b>'e bas.</td>
+                <td colspan="8">Henüz sonuç yok. Proxy listesini yapıştırıp <b>Kontrol Et</b>'e bas.</td>
               </tr>
             </tbody>
           </table>
         </div>
         <div class="legend">
-          <span><i class="dot dot-ok"></i> Skor &lt; 0.5 (temiz)</span>
-          <span><i class="dot dot-warn"></i> 0.5 – 0.9 (şüpheli)</span>
-          <span><i class="dot dot-bad"></i> &gt; 0.9 (proxy/VPN tespit edildi)</span>
+          <span><i class="dot dot-ok"></i> Temiz (residential, blacklist'te değil)</span>
+          <span><i class="dot dot-warn"></i> Şüpheli (hosting / orta skor)</span>
+          <span><i class="dot dot-bad"></i> VPN / Proxy / Tor tespit edildi</span>
+          <span class="legend-sep">•</span>
+          <span class="muted">Sinyaller: getipintel skor + ip-api proxy/hosting/mobile flag</span>
         </div>
       </section>
     </div>

@@ -47,7 +47,7 @@ function setProgress(done, total) {
 function clearResults() {
   rows = [];
   els.resultsBody.innerHTML =
-    '<tr class="empty"><td colspan="7">Henüz sonuç yok. Proxy listesini yapıştırıp <b>Kontrol Et</b>\'e bas.</td></tr>';
+    '<tr class="empty"><td colspan="8">Henüz sonuç yok. Proxy listesini yapıştırıp <b>Kontrol Et</b>\'e bas.</td></tr>';
   els.exportBtn.disabled = true;
   setProgress(0, 1);
   setStatus('Hazır.');
@@ -67,6 +67,7 @@ function ensureRow(index, proxyRaw) {
     <td class="col-ip">—</td>
     <td class="col-country">—</td>
     <td class="col-isp">—</td>
+    <td class="col-type">—</td>
     <td class="col-score">—</td>
     <td class="col-status"><span class="badge badge-pending">Bekliyor</span></td>
   `;
@@ -86,8 +87,11 @@ function updateRow(index, patch) {
   cells[3].textContent = d.country || '—';
   cells[4].textContent = d.isp || '—';
 
+  // Type cell (proxy/hosting/mobile/residential chips)
+  cells[5].innerHTML = renderTypeChips(d);
+
   // Score cell with color
-  const scoreCell = cells[5];
+  const scoreCell = cells[6];
   if (typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0) {
     scoreCell.textContent = d.score.toFixed(4);
     scoreCell.className = 'col-score ' + scoreClass(d.score);
@@ -97,8 +101,19 @@ function updateRow(index, patch) {
   }
 
   // Status badge
-  const statusCell = cells[6];
+  const statusCell = cells[7];
   statusCell.innerHTML = renderStatus(d);
+}
+
+function renderTypeChips(d) {
+  if (!d.ip) return '—';
+  const chips = [];
+  if (d.isProxy) chips.push('<span class="chip chip-proxy">Proxy</span>');
+  if (d.isHosting) chips.push('<span class="chip chip-hosting">Hosting</span>');
+  if (d.isMobile) chips.push('<span class="chip chip-mobile">Mobile</span>');
+  if (chips.length === 0)
+    chips.push('<span class="chip chip-residential">Residential</span>');
+  return chips.join('');
 }
 
 function scoreClass(s) {
@@ -108,25 +123,35 @@ function scoreClass(s) {
 }
 
 function renderStatus(d) {
-  if (d.status === 'ok') {
-    if (d.score < 0.5)
-      return '<span class="badge badge-ok">Temiz</span>';
-    if (d.score < 0.9)
-      return '<span class="badge badge-warn">Şüpheli</span>';
-    return '<span class="badge badge-bad">VPN/Proxy</span>';
-  }
+  // Combine signals: ip-api proxy/hosting flags + getipintel score.
+  // Either signal alone can flag an IP.
   if (d.status === 'proxy-error')
     return `<span class="badge badge-error" title="${escapeAttr(
       d.error || ''
     )}">Proxy hata</span>`;
+
+  const hasScore =
+    typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0;
+
+  // Hard fail: confirmed proxy by ip-api OR very high getipintel score
+  if (d.isProxy || (hasScore && d.score >= 0.9))
+    return '<span class="badge badge-bad">VPN/Proxy</span>';
+
+  // Suspicious: hosting/datacenter or mid score
+  if (d.isHosting || (hasScore && d.score >= 0.5))
+    return '<span class="badge badge-warn">Şüpheli</span>';
+
+  if (d.status === 'ok')
+    return '<span class="badge badge-ok">Temiz</span>';
+
   if (d.status === 'score-error')
     return `<span class="badge badge-error" title="${escapeAttr(
       d.error || ''
     )}">Skor hata</span>`;
-  if (d.stage === 'ip-detected')
+
+  if (d.stage === 'ip-detected' || d.stage === 'scoring')
     return '<span class="badge badge-pending">Skorlanıyor</span>';
-  if (d.stage === 'scoring')
-    return '<span class="badge badge-pending">Skorlanıyor</span>';
+
   return '<span class="badge badge-pending">İşleniyor</span>';
 }
 
@@ -191,7 +216,22 @@ els.checkBtn.addEventListener('click', async () => {
 });
 
 els.exportBtn.addEventListener('click', async () => {
-  const header = ['#', 'Proxy', 'IP', 'Country', 'Region', 'City', 'ISP', 'Score', 'Status', 'Error'];
+  const header = [
+    '#',
+    'Proxy',
+    'IP',
+    'Country',
+    'Region',
+    'City',
+    'ISP',
+    'AS',
+    'Proxy',
+    'Hosting',
+    'Mobile',
+    'Score',
+    'Status',
+    'Error',
+  ];
   const lines = [header.join(',')];
   rows.forEach((row, i) => {
     const d = row.data;
@@ -203,6 +243,10 @@ els.exportBtn.addEventListener('click', async () => {
       d.region || '',
       d.city || '',
       d.isp || '',
+      d.as || '',
+      d.isProxy ? 'true' : 'false',
+      d.isHosting ? 'true' : 'false',
+      d.isMobile ? 'true' : 'false',
       typeof d.score === 'number' ? d.score : '',
       d.status || '',
       d.error || '',
@@ -238,6 +282,9 @@ window.api.onProgress((data) => {
   if (data.ip) patch.ip = data.ip;
   if (data.country !== undefined) patch.country = data.country;
   if (data.isp !== undefined) patch.isp = data.isp;
+  if (data.isProxy !== undefined) patch.isProxy = data.isProxy;
+  if (data.isHosting !== undefined) patch.isHosting = data.isHosting;
+  if (data.isMobile !== undefined) patch.isMobile = data.isMobile;
   if (data.error) patch.error = data.error;
   if (data.stage === 'ip-failed') patch.status = 'proxy-error';
   updateRow(data.index, patch);

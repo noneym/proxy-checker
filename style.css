@@ -274,8 +274,11 @@ tr.empty td {
 }
 .col-isp {
   color: var(--text-dim);
-  max-width: 220px;
+  max-width: 200px;
   word-break: break-word;
+}
+.col-type {
+  width: 110px;
 }
 .col-score {
   width: 90px;
@@ -326,12 +329,40 @@ tr.empty td {
 
 .legend {
   display: flex;
-  gap: 18px;
+  gap: 14px;
   align-items: center;
+  flex-wrap: wrap;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
   font-size: 11.5px;
   color: var(--text-dim);
+}
+.legend-sep {
+  color: var(--muted);
+}
+.chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 100px;
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-right: 4px;
+}
+.chip-residential {
+  background: rgba(52, 201, 122, 0.13);
+  color: var(--ok);
+}
+.chip-hosting {
+  background: rgba(240, 179, 74, 0.15);
+  color: var(--warn);
+}
+.chip-proxy {
+  background: rgba(239, 93, 93, 0.15);
+  color: var(--bad);
+}
+.chip-mobile {
+  background: rgba(91, 140, 255, 0.15);
+  color: var(--accent);
 }
 .dot {
   display: inline-block;

@@ -118,10 +118,21 @@ async function detectIP(proxy) {
   throw lastErr || new Error('IP tespit edilemedi');
 }
 
-async function getIpInfo(ip) {
+async function getIpApiInfo(ip) {
+  // ip-api.com free tier: HTTP only, 45 req/min, no API key needed.
+  // Returns proxy/hosting/mobile booleans which catch residential proxy services
+  // that getipintel's blacklist alone misses.
   try {
-    const res = await httpGet(`https://ipinfo.io/${ip}/json`, { timeoutMs: 10000 });
-    if (res.status === 200) return JSON.parse(res.body);
+    const fields =
+      'status,message,country,countryCode,region,regionName,city,isp,org,as,proxy,hosting,mobile';
+    const res = await httpGet(
+      `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=${fields}`,
+      { timeoutMs: 10000 }
+    );
+    if (res.status === 200) {
+      const data = JSON.parse(res.body);
+      if (data.status === 'success') return data;
+    }
   } catch (e) {
     /* ignore */
   }
@@ -131,11 +142,23 @@ async function getIpInfo(ip) {
 async function getIpScore(ip, contact) {
   const url = `https://check.getipintel.net/check.php?ip=${encodeURIComponent(
     ip
-  )}&contact=${encodeURIComponent(contact)}&flags=m`;
+  )}&contact=${encodeURIComponent(contact)}&format=json`;
   const res = await httpGet(url, { timeoutMs: 30000 });
   const raw = (res.body || '').trim();
-  const score = parseFloat(raw);
-  return { score, raw, status: res.status };
+  let score = NaN;
+  let apiStatus = 'unknown';
+  try {
+    const data = JSON.parse(raw);
+    apiStatus = data.status || 'unknown';
+    if (apiStatus === 'success') {
+      score = parseFloat(data.result);
+    }
+  } catch (e) {
+    // Fall back to plain text parsing in case API ever returns non-JSON
+    score = parseFloat(raw);
+    apiStatus = Number.isNaN(score) ? 'error' : 'success';
+  }
+  return { score, raw, apiStatus, httpStatus: res.status };
 }
 
 function sleep(ms) {
@@ -184,13 +207,19 @@ ipcMain.handle('check-proxies', async (event, { lines, contact }) => {
     }
     try {
       const ip = await detectIP(item.parsed);
-      const info = await getIpInfo(ip);
+      const info = await getIpApiInfo(ip);
       ipResults[idx] = {
         ip,
-        country: info.country || '',
-        region: info.region || '',
+        country: info.countryCode || info.country || '',
+        countryName: info.country || '',
+        region: info.regionName || info.region || '',
         city: info.city || '',
-        isp: info.org || '',
+        isp: info.isp || info.org || '',
+        org: info.org || '',
+        as: info.as || '',
+        isProxy: info.proxy === true,
+        isHosting: info.hosting === true,
+        isMobile: info.mobile === true,
       };
       event.sender.send('check-progress', {
         index: idx,
@@ -198,8 +227,11 @@ ipcMain.handle('check-proxies', async (event, { lines, contact }) => {
         stage: 'ip-detected',
         raw: item.raw,
         ip,
-        country: info.country || '',
-        isp: info.org || '',
+        country: ipResults[idx].country,
+        isp: ipResults[idx].isp,
+        isProxy: ipResults[idx].isProxy,
+        isHosting: ipResults[idx].isHosting,
+        isMobile: ipResults[idx].isMobile,
       });
     } catch (e) {
       ipResults[idx] = { error: e.message || String(e) };
@@ -241,10 +273,10 @@ ipcMain.handle('check-proxies', async (event, { lines, contact }) => {
     });
 
     try {
-      const { score, raw } = await getIpScore(ipData.ip, contact);
+      const { score, raw, apiStatus } = await getIpScore(ipData.ip, contact);
       result.score = score;
       result.scoreRaw = raw;
-      if (Number.isNaN(score) || score < 0) {
+      if (apiStatus !== 'success' || Number.isNaN(score) || score < 0) {
         result.status = 'score-error';
         result.error = `getipintel: ${raw}`;
       } else {
