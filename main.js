@@ -139,7 +139,7 @@ async function getIpApiInfo(ip) {
   return {};
 }
 
-async function getIpScore(ip, contact) {
+async function getGetIpIntelScore(ip, contact) {
   const url = `https://check.getipintel.net/check.php?ip=${encodeURIComponent(
     ip
   )}&contact=${encodeURIComponent(contact)}&format=json`;
@@ -154,11 +154,70 @@ async function getIpScore(ip, contact) {
       score = parseFloat(data.result);
     }
   } catch (e) {
-    // Fall back to plain text parsing in case API ever returns non-JSON
     score = parseFloat(raw);
     apiStatus = Number.isNaN(score) ? 'error' : 'success';
   }
-  return { score, raw, apiStatus, httpStatus: res.status };
+  // Normalize getipintel score (0-1 float) to 0-100 percentage for consistency.
+  const score100 = Number.isFinite(score) && score >= 0 ? score * 100 : NaN;
+  return {
+    provider: 'getipintel',
+    score: score100,
+    rawScore: score,
+    raw,
+    apiStatus,
+    httpStatus: res.status,
+  };
+}
+
+async function getIpqsScore(ip, apiKey) {
+  // strictness=1: balanced. allow_public_access_points=true: avoid false positives on shared wifi.
+  const url = `https://www.ipqualityscore.com/api/json/ip/${encodeURIComponent(
+    apiKey
+  )}/${encodeURIComponent(ip)}?strictness=1&allow_public_access_points=true`;
+  const res = await httpGet(url, { timeoutMs: 30000 });
+  const raw = (res.body || '').trim();
+  let data = {};
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return {
+      provider: 'ipqs',
+      score: NaN,
+      raw,
+      apiStatus: 'error',
+      error: 'Geçersiz IPQS yanıtı',
+    };
+  }
+  if (!data.success) {
+    return {
+      provider: 'ipqs',
+      score: NaN,
+      raw,
+      apiStatus: 'error',
+      error: data.message || 'IPQS hatası',
+    };
+  }
+  return {
+    provider: 'ipqs',
+    score: typeof data.fraud_score === 'number' ? data.fraud_score : NaN,
+    raw,
+    apiStatus: 'success',
+    flags: {
+      proxy: !!data.proxy,
+      vpn: !!data.vpn,
+      tor: !!data.tor,
+      activeVpn: !!data.active_vpn,
+      activeTor: !!data.active_tor,
+      recentAbuse: !!data.recent_abuse,
+      bot: !!data.bot_status,
+      mobile: !!data.mobile,
+      crawler: !!data.is_crawler,
+      connectionType: data.connection_type || '',
+    },
+    isp: data.ISP || '',
+    asn: data.ASN || '',
+    countryCode: data.country_code || '',
+  };
 }
 
 function sleep(ms) {
@@ -183,7 +242,8 @@ async function pool(items, concurrency, fn) {
   return results;
 }
 
-ipcMain.handle('check-proxies', async (event, { lines, contact }) => {
+ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
+  const useIpqs = !!(ipqsKey && ipqsKey.trim());
   const proxies = (lines || [])
     .map((l) => ({ raw: l, parsed: parseProxy(l) }))
     .filter((x) => x.raw && x.raw.trim());
@@ -273,12 +333,31 @@ ipcMain.handle('check-proxies', async (event, { lines, contact }) => {
     });
 
     try {
-      const { score, raw, apiStatus } = await getIpScore(ipData.ip, contact);
-      result.score = score;
-      result.scoreRaw = raw;
-      if (apiStatus !== 'success' || Number.isNaN(score) || score < 0) {
+      const scoreResult = useIpqs
+        ? await getIpqsScore(ipData.ip, ipqsKey.trim())
+        : await getGetIpIntelScore(ipData.ip, contact);
+      result.score = scoreResult.score;
+      result.scoreRaw = scoreResult.raw;
+      result.scoreProvider = scoreResult.provider;
+      if (scoreResult.flags) {
+        // Merge IPQS flags into row data (overrides ip-api when more specific).
+        result.isProxy = scoreResult.flags.proxy || result.isProxy;
+        result.isVpn = scoreResult.flags.vpn;
+        result.isTor = scoreResult.flags.tor;
+        result.isActiveVpn = scoreResult.flags.activeVpn;
+        result.isActiveTor = scoreResult.flags.activeTor;
+        result.isRecentAbuse = scoreResult.flags.recentAbuse;
+        result.isBot = scoreResult.flags.bot;
+        result.isCrawler = scoreResult.flags.crawler;
+        result.connectionType = scoreResult.flags.connectionType;
+      }
+      if (
+        scoreResult.apiStatus !== 'success' ||
+        Number.isNaN(scoreResult.score)
+      ) {
         result.status = 'score-error';
-        result.error = `getipintel: ${raw}`;
+        result.error =
+          scoreResult.error || `${scoreResult.provider}: ${scoreResult.raw}`;
       } else {
         result.status = 'ok';
       }
@@ -290,8 +369,9 @@ ipcMain.handle('check-proxies', async (event, { lines, contact }) => {
     finalResults.push(result);
     event.sender.send('check-result', result);
 
-    // Free tier rate limit: 15/min — leave headroom with 4.5s gap
-    if (i < proxies.length - 1) await sleep(4500);
+    // getipintel free tier rate limit: 15/min => 4.5s gap.
+    // IPQS free tier is much more generous (~5k/month, no per-second limit), so 0.3s suffices.
+    if (i < proxies.length - 1) await sleep(useIpqs ? 300 : 4500);
   }
 
   event.sender.send('check-done', { total, results: finalResults });

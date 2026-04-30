@@ -73,19 +73,27 @@ body {
   color: var(--text-dim);
 }
 
-.email-field {
+.key-fields {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+.field {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.email-field label {
+.field label {
   font-size: 11px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.email-field input {
-  width: 280px;
+.field input {
+  width: 320px;
   padding: 8px 10px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -94,8 +102,18 @@ body {
   outline: none;
   font-size: 13px;
 }
-.email-field input:focus {
+.field input:focus {
   border-color: var(--accent);
+}
+.field-help {
+  font-size: 10.5px;
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+  text-decoration: none;
+}
+.field-help:hover {
+  text-decoration: underline;
 }
 
 /* cards */

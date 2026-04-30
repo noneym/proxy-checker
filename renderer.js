@@ -1,5 +1,6 @@
 const els = {
   email: document.getElementById('email'),
+  ipqsKey: document.getElementById('ipqs-key'),
   proxies: document.getElementById('proxies'),
   checkBtn: document.getElementById('check-btn'),
   clearBtn: document.getElementById('clear-btn'),
@@ -11,10 +12,14 @@ const els = {
   resultsBody: document.getElementById('results-body'),
 };
 
-// Restore saved email
+// Restore saved credentials
 els.email.value = localStorage.getItem('contactEmail') || '';
+els.ipqsKey.value = localStorage.getItem('ipqsApiKey') || '';
 els.email.addEventListener('input', () => {
   localStorage.setItem('contactEmail', els.email.value.trim());
+});
+els.ipqsKey.addEventListener('input', () => {
+  localStorage.setItem('ipqsApiKey', els.ipqsKey.value.trim());
 });
 
 // Live proxy count
@@ -90,13 +95,16 @@ function updateRow(index, patch) {
   // Type cell (proxy/hosting/mobile/residential chips)
   cells[5].innerHTML = renderTypeChips(d);
 
-  // Score cell with color
+  // Score cell with color (both providers normalized to 0-100)
   const scoreCell = cells[6];
   if (typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0) {
-    scoreCell.textContent = d.score.toFixed(4);
+    const provider = d.scoreProvider === 'ipqs' ? 'IPQS' : 'gII';
+    scoreCell.textContent = `${d.score.toFixed(0)} / 100`;
+    scoreCell.title = `${provider} provider`;
     scoreCell.className = 'col-score ' + scoreClass(d.score);
   } else {
     scoreCell.textContent = '—';
+    scoreCell.title = '';
     scoreCell.className = 'col-score';
   }
 
@@ -109,22 +117,31 @@ function renderTypeChips(d) {
   if (!d.ip) return '—';
   const chips = [];
   if (d.isProxy) chips.push('<span class="chip chip-proxy">Proxy</span>');
+  if (d.isVpn) chips.push('<span class="chip chip-proxy">VPN</span>');
+  if (d.isTor) chips.push('<span class="chip chip-proxy">Tor</span>');
+  if (d.isActiveVpn)
+    chips.push('<span class="chip chip-proxy" title="Şu anda aktif VPN trafiği">Active VPN</span>');
+  if (d.isRecentAbuse)
+    chips.push('<span class="chip chip-proxy" title="Son zamanlarda kötüye kullanım">Abuse</span>');
+  if (d.isBot) chips.push('<span class="chip chip-proxy">Bot</span>');
   if (d.isHosting) chips.push('<span class="chip chip-hosting">Hosting</span>');
   if (d.isMobile) chips.push('<span class="chip chip-mobile">Mobile</span>');
-  if (chips.length === 0)
-    chips.push('<span class="chip chip-residential">Residential</span>');
+  if (chips.length === 0) {
+    const label = d.connectionType || 'Residential';
+    chips.push(`<span class="chip chip-residential">${escapeHtml(label)}</span>`);
+  }
   return chips.join('');
 }
 
 function scoreClass(s) {
-  if (s < 0.5) return 'score-ok';
-  if (s < 0.9) return 'score-warn';
+  // 0-100 scale (works for both IPQS fraud_score and getipintel*100)
+  if (s < 50) return 'score-ok';
+  if (s < 85) return 'score-warn';
   return 'score-bad';
 }
 
 function renderStatus(d) {
-  // Combine signals: ip-api proxy/hosting flags + getipintel score.
-  // Either signal alone can flag an IP.
+  // Combine signals from ip-api flags + IPQS/getipintel score (0-100 normalized).
   if (d.status === 'proxy-error')
     return `<span class="badge badge-error" title="${escapeAttr(
       d.error || ''
@@ -133,12 +150,14 @@ function renderStatus(d) {
   const hasScore =
     typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0;
 
-  // Hard fail: confirmed proxy by ip-api OR very high getipintel score
-  if (d.isProxy || (hasScore && d.score >= 0.9))
+  // Hard fail: any explicit proxy/vpn/tor/abuse flag OR very high score
+  const hardFlag =
+    d.isProxy || d.isVpn || d.isTor || d.isActiveVpn || d.isRecentAbuse;
+  if (hardFlag || (hasScore && d.score >= 85))
     return '<span class="badge badge-bad">VPN/Proxy</span>';
 
   // Suspicious: hosting/datacenter or mid score
-  if (d.isHosting || (hasScore && d.score >= 0.5))
+  if (d.isHosting || (hasScore && d.score >= 50))
     return '<span class="badge badge-warn">Şüpheli</span>';
 
   if (d.status === 'ok')
@@ -176,10 +195,17 @@ els.clearBtn.addEventListener('click', () => {
 els.checkBtn.addEventListener('click', async () => {
   if (isRunning) return;
   const contact = els.email.value.trim();
-  if (!contact || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact)) {
-    alert('Geçerli bir contact email girmelisin (getipintel.net için zorunlu).');
-    els.email.focus();
-    return;
+  const ipqsKey = els.ipqsKey.value.trim();
+  if (!ipqsKey) {
+    if (!contact || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact)) {
+      alert(
+        'IPQualityScore key veya geçerli bir contact email gerekli.\n\n' +
+          'Residential proxy detection için IPQS önerilir (5k/ay ücretsiz).\n' +
+          'Email girersen getipintel kullanılır ama residential proxyler için 0 dönme ihtimali yüksek.'
+      );
+      els.ipqsKey.focus();
+      return;
+    }
   }
   const lines = els.proxies.value
     .split(/\r?\n/)
@@ -199,12 +225,14 @@ els.checkBtn.addEventListener('click', async () => {
   els.checkBtn.disabled = true;
   els.clearBtn.disabled = true;
   els.exportBtn.disabled = true;
-  setStatus('Proxy IP\'leri tespit ediliyor...');
+  setStatus(
+    `Proxy IP'leri tespit ediliyor... (scorer: ${ipqsKey ? 'IPQualityScore' : 'getipintel'})`
+  );
   setProgress(0, lines.length);
   setCounter(`0 / ${lines.length}`);
 
   try {
-    await window.api.checkProxies({ lines, contact });
+    await window.api.checkProxies({ lines, contact, ipqsKey });
   } catch (e) {
     setStatus('Hata: ' + (e.message || String(e)));
   } finally {
@@ -226,9 +254,15 @@ els.exportBtn.addEventListener('click', async () => {
     'ISP',
     'AS',
     'Proxy',
+    'VPN',
+    'Tor',
+    'ActiveVPN',
+    'RecentAbuse',
     'Hosting',
     'Mobile',
+    'ConnectionType',
     'Score',
+    'ScoreProvider',
     'Status',
     'Error',
   ];
@@ -245,9 +279,15 @@ els.exportBtn.addEventListener('click', async () => {
       d.isp || '',
       d.as || '',
       d.isProxy ? 'true' : 'false',
+      d.isVpn ? 'true' : 'false',
+      d.isTor ? 'true' : 'false',
+      d.isActiveVpn ? 'true' : 'false',
+      d.isRecentAbuse ? 'true' : 'false',
       d.isHosting ? 'true' : 'false',
       d.isMobile ? 'true' : 'false',
-      typeof d.score === 'number' ? d.score : '',
+      d.connectionType || '',
+      typeof d.score === 'number' ? d.score.toFixed(2) : '',
+      d.scoreProvider || '',
       d.status || '',
       d.error || '',
     ].map(csvEscape);
