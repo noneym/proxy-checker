@@ -343,10 +343,22 @@ window.api.onResult((data) => {
   progressDone++;
   setProgress(progressDone, progressTotal);
   setCounter(`${progressDone} / ${progressTotal}`);
+  if (data.status === 'score-error' && data.error) {
+    setStatus(`Skor hatası: ${data.error}`);
+  }
 });
 
-window.api.onDone(({ total }) => {
-  setStatus(`Tamamlandı (${total} proxy).`);
+window.api.onAborted(({ reason }) => {
+  setStatus(`İşlem durduruldu: ${reason}`);
+  alert(
+    `Skorlama durduruldu.\n\nSebep: ${reason}\n\n` +
+      'Bu hata IPQS hesap düzeyinde — tüm IP\'ler için aynısını dönecekti, ' +
+      'rate limit yakmamak için kalan proxy\'ler atlandı.'
+  );
+});
+
+window.api.onDone(({ total, aborted }) => {
+  if (!aborted) setStatus(`Tamamlandı (${total} proxy).`);
   setProgress(total, total);
   els.exportBtn.disabled = rows.length === 0;
 });

@@ -189,11 +189,21 @@ async function getIpqsScore(ip, apiKey) {
     };
   }
   if (!data.success) {
+    const msg = (data.message || '').toLowerCase();
+    // Account-level errors that affect every subsequent call too. Surface as fatal
+    // so the caller can abort the batch instead of repeating the same error per IP.
+    const fatal =
+      msg.includes('insufficient credit') ||
+      msg.includes('unauthorized') ||
+      msg.includes('invalid') ||
+      msg.includes('disabled') ||
+      msg.includes('exceeded');
     return {
       provider: 'ipqs',
       score: NaN,
       raw,
       apiStatus: 'error',
+      fatal,
       error: data.message || 'IPQS hatası',
     };
   }
@@ -305,8 +315,9 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
     }
   });
 
-  // Phase 2: getipintel scoring (serial, throttled to ~13/min)
+  // Phase 2: scoring (serial, throttled)
   const finalResults = [];
+  let aborted = false;
   for (let i = 0; i < proxies.length; i++) {
     const item = proxies[i];
     const ipData = ipResults[i] || {};
@@ -340,7 +351,6 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
       result.scoreRaw = scoreResult.raw;
       result.scoreProvider = scoreResult.provider;
       if (scoreResult.flags) {
-        // Merge IPQS flags into row data (overrides ip-api when more specific).
         result.isProxy = scoreResult.flags.proxy || result.isProxy;
         result.isVpn = scoreResult.flags.vpn;
         result.isTor = scoreResult.flags.tor;
@@ -358,6 +368,7 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
         result.status = 'score-error';
         result.error =
           scoreResult.error || `${scoreResult.provider}: ${scoreResult.raw}`;
+        if (scoreResult.fatal) aborted = scoreResult.error;
       } else {
         result.status = 'ok';
       }
@@ -369,12 +380,32 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
     finalResults.push(result);
     event.sender.send('check-result', result);
 
-    // getipintel free tier rate limit: 15/min => 4.5s gap.
-    // IPQS free tier is much more generous (~5k/month, no per-second limit), so 0.3s suffices.
+    if (aborted) {
+      // Mark remaining proxies as aborted so the user sees them, but don't burn
+      // the rate limit on calls that will all return the same error.
+      for (let j = i + 1; j < proxies.length; j++) {
+        const remainingItem = proxies[j];
+        const remainingIp = (ipResults[j] && ipResults[j].ip) || '';
+        const remainingResult = {
+          index: j,
+          raw: remainingItem.raw,
+          ...(ipResults[j] || {}),
+          ip: remainingIp,
+          status: 'score-error',
+          error: `Atlandı: ${aborted}`,
+        };
+        finalResults.push(remainingResult);
+        event.sender.send('check-result', remainingResult);
+      }
+      event.sender.send('check-aborted', { reason: aborted });
+      break;
+    }
+
+    // getipintel free tier: 15/min → 4.5s gap. IPQS: 300ms.
     if (i < proxies.length - 1) await sleep(useIpqs ? 300 : 4500);
   }
 
-  event.sender.send('check-done', { total, results: finalResults });
+  event.sender.send('check-done', { total, results: finalResults, aborted });
   return finalResults;
 });
 

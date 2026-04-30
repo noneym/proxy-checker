@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('api', {
   onProgress: (cb) => ipcRenderer.on('check-progress', (_, d) => cb(d)),
   onResult: (cb) => ipcRenderer.on('check-result', (_, d) => cb(d)),
   onDone: (cb) => ipcRenderer.on('check-done', (_, d) => cb(d)),
+  onAborted: (cb) => ipcRenderer.on('check-aborted', (_, d) => cb(d)),
 });
