@@ -18,14 +18,21 @@
         </div>
         <div class="key-fields">
           <div class="field">
-            <label for="ipqs-key">
-              IPQualityScore API key
-              <a class="field-help" href="https://www.ipqualityscore.com/create-account" target="_blank" rel="noopener">5k/ay ücretsiz →</a>
+            <label for="abuse-key">
+              AbuseIPDB API key
+              <a class="field-help" href="https://www.abuseipdb.com/register" target="_blank" rel="noopener">1k/gün ücretsiz →</a>
             </label>
-            <input id="ipqs-key" type="text" placeholder="anahtar girince residential proxy'ler de yakalanır" />
+            <input id="abuse-key" type="text" placeholder="abuse confidence score için (önerilen)" />
           </div>
           <div class="field">
-            <label for="email">Contact email <span class="muted">(IPQS yoksa getipintel için)</span></label>
+            <label for="ipqs-key">
+              IPQualityScore API key
+              <a class="field-help" href="https://www.ipqualityscore.com/create-account" target="_blank" rel="noopener">paid →</a>
+            </label>
+            <input id="ipqs-key" type="text" placeholder="varsa fraud_score (residential detection)" />
+          </div>
+          <div class="field">
+            <label for="email">Contact email <span class="muted">(getipintel için)</span></label>
             <input id="email" type="email" placeholder="email@example.com" />
           </div>
         </div>
@@ -70,7 +77,7 @@
               <tr>
                 <th class="col-num">#</th>
                 <th class="col-proxy">Proxy</th>
-                <th class="col-ip">Tespit Edilen IP</th>
+                <th class="col-ip">IP / Latency</th>
                 <th class="col-country">Ülke</th>
                 <th class="col-isp">ISP</th>
                 <th class="col-type">Tip</th>

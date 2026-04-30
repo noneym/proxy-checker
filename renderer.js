@@ -1,6 +1,7 @@
 const els = {
   email: document.getElementById('email'),
   ipqsKey: document.getElementById('ipqs-key'),
+  abuseKey: document.getElementById('abuse-key'),
   proxies: document.getElementById('proxies'),
   checkBtn: document.getElementById('check-btn'),
   clearBtn: document.getElementById('clear-btn'),
@@ -15,11 +16,15 @@ const els = {
 // Restore saved credentials
 els.email.value = localStorage.getItem('contactEmail') || '';
 els.ipqsKey.value = localStorage.getItem('ipqsApiKey') || '';
+els.abuseKey.value = localStorage.getItem('abuseIpDbApiKey') || '';
 els.email.addEventListener('input', () => {
   localStorage.setItem('contactEmail', els.email.value.trim());
 });
 els.ipqsKey.addEventListener('input', () => {
   localStorage.setItem('ipqsApiKey', els.ipqsKey.value.trim());
+});
+els.abuseKey.addEventListener('input', () => {
+  localStorage.setItem('abuseIpDbApiKey', els.abuseKey.value.trim());
 });
 
 // Live proxy count
@@ -88,19 +93,29 @@ function updateRow(index, patch) {
   Object.assign(row.data, patch);
   const d = row.data;
   const cells = row.tr.children;
-  cells[2].textContent = d.ip || '—';
+
+  // IP + latency cell
+  cells[2].innerHTML = renderIpCell(d);
+
   cells[3].textContent = d.country || '—';
   cells[4].textContent = d.isp || '—';
 
   // Type cell (proxy/hosting/mobile/residential chips)
   cells[5].innerHTML = renderTypeChips(d);
 
-  // Score cell with color (both providers normalized to 0-100)
+  // Score cell with color (all providers normalized to 0-100)
   const scoreCell = cells[6];
   if (typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0) {
-    const provider = d.scoreProvider === 'ipqs' ? 'IPQS' : 'gII';
+    const providerLabels = { ipqs: 'IPQS', getipintel: 'gII', abuseipdb: 'AbuseIPDB' };
+    const top = providerLabels[d.scoreProvider] || d.scoreProvider;
     scoreCell.textContent = `${d.score.toFixed(0)} / 100`;
-    scoreCell.title = `${provider} provider`;
+    if (Array.isArray(d.scoreSources) && d.scoreSources.length > 0) {
+      scoreCell.title = d.scoreSources
+        .map((s) => `${providerLabels[s.provider] || s.provider}: ${s.score.toFixed(0)}`)
+        .join(' • ') + ` (en yüksek: ${top})`;
+    } else {
+      scoreCell.title = top || '';
+    }
     scoreCell.className = 'col-score ' + scoreClass(d.score);
   } else {
     scoreCell.textContent = '—';
@@ -113,12 +128,24 @@ function updateRow(index, patch) {
   statusCell.innerHTML = renderStatus(d);
 }
 
+function renderIpCell(d) {
+  if (!d.ip) return '—';
+  let latency = '';
+  if (typeof d.latencyMs === 'number') {
+    let cls = 'latency-fast';
+    if (d.latencyMs > 3000) cls = 'latency-slow';
+    else if (d.latencyMs > 1500) cls = 'latency-mid';
+    latency = `<span class="latency ${cls}">${d.latencyMs} ms</span>`;
+  }
+  return `${escapeHtml(d.ip)}${latency}`;
+}
+
 function renderTypeChips(d) {
   if (!d.ip) return '—';
   const chips = [];
   if (d.isProxy) chips.push('<span class="chip chip-proxy">Proxy</span>');
   if (d.isVpn) chips.push('<span class="chip chip-proxy">VPN</span>');
-  if (d.isTor) chips.push('<span class="chip chip-proxy">Tor</span>');
+  if (d.isTor || d.abuseIsTor) chips.push('<span class="chip chip-proxy">Tor</span>');
   if (d.isActiveVpn)
     chips.push('<span class="chip chip-proxy" title="Şu anda aktif VPN trafiği">Active VPN</span>');
   if (d.isRecentAbuse)
@@ -126,8 +153,15 @@ function renderTypeChips(d) {
   if (d.isBot) chips.push('<span class="chip chip-proxy">Bot</span>');
   if (d.isHosting) chips.push('<span class="chip chip-hosting">Hosting</span>');
   if (d.isMobile) chips.push('<span class="chip chip-mobile">Mobile</span>');
+  if (typeof d.abuseReports === 'number' && d.abuseReports > 0) {
+    const tt = `${d.abuseReports} abuse raporu` +
+      (d.abuseLastReportedAt ? ` (son: ${d.abuseLastReportedAt.split('T')[0]})` : '');
+    chips.push(
+      `<span class="chip chip-abuse" title="${escapeAttr(tt)}">${d.abuseReports} rapor</span>`
+    );
+  }
   if (chips.length === 0) {
-    const label = d.connectionType || 'Residential';
+    const label = d.connectionType || d.abuseUsageType || 'Residential';
     chips.push(`<span class="chip chip-residential">${escapeHtml(label)}</span>`);
   }
   return chips.join('');
@@ -196,16 +230,21 @@ els.checkBtn.addEventListener('click', async () => {
   if (isRunning) return;
   const contact = els.email.value.trim();
   const ipqsKey = els.ipqsKey.value.trim();
-  if (!ipqsKey) {
-    if (!contact || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact)) {
-      alert(
-        'IPQualityScore key veya geçerli bir contact email gerekli.\n\n' +
-          'Residential proxy detection için IPQS önerilir (5k/ay ücretsiz).\n' +
-          'Email girersen getipintel kullanılır ama residential proxyler için 0 dönme ihtimali yüksek.'
-      );
-      els.ipqsKey.focus();
-      return;
-    }
+  const abuseKey = els.abuseKey.value.trim();
+  const hasAnyScorer = !!(
+    ipqsKey ||
+    abuseKey ||
+    (contact && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact))
+  );
+  if (!hasAnyScorer) {
+    alert(
+      'En az bir scorer yapılandır:\n\n' +
+        '• AbuseIPDB key (önerilen, 1k/gün ücretsiz)\n' +
+        '• IPQS key (paid, residential detection için)\n' +
+        '• getipintel için contact email (residential\'larda 0 dönebilir)'
+    );
+    els.abuseKey.focus();
+    return;
   }
   const lines = els.proxies.value
     .split(/\r?\n/)
@@ -225,14 +264,17 @@ els.checkBtn.addEventListener('click', async () => {
   els.checkBtn.disabled = true;
   els.clearBtn.disabled = true;
   els.exportBtn.disabled = true;
-  setStatus(
-    `Proxy IP'leri tespit ediliyor... (scorer: ${ipqsKey ? 'IPQualityScore' : 'getipintel'})`
-  );
+  const scorers = [
+    abuseKey ? 'AbuseIPDB' : null,
+    ipqsKey ? 'IPQS' : null,
+    !ipqsKey && contact ? 'getipintel' : null,
+  ].filter(Boolean);
+  setStatus(`Proxy IP'leri tespit ediliyor... (scorers: ${scorers.join(', ')})`);
   setProgress(0, lines.length);
   setCounter(`0 / ${lines.length}`);
 
   try {
-    await window.api.checkProxies({ lines, contact, ipqsKey });
+    await window.api.checkProxies({ lines, contact, ipqsKey, abuseKey });
   } catch (e) {
     setStatus('Hata: ' + (e.message || String(e)));
   } finally {
@@ -248,6 +290,7 @@ els.exportBtn.addEventListener('click', async () => {
     '#',
     'Proxy',
     'IP',
+    'LatencyMs',
     'Country',
     'Region',
     'City',
@@ -261,18 +304,27 @@ els.exportBtn.addEventListener('click', async () => {
     'Hosting',
     'Mobile',
     'ConnectionType',
+    'AbuseScore',
+    'AbuseReports',
+    'AbuseLastReportedAt',
+    'AbuseUsageType',
     'Score',
     'ScoreProvider',
+    'AllScores',
     'Status',
     'Error',
   ];
   const lines = [header.join(',')];
   rows.forEach((row, i) => {
     const d = row.data;
+    const allScores = Array.isArray(d.scoreSources)
+      ? d.scoreSources.map((s) => `${s.provider}=${s.score.toFixed(0)}`).join('|')
+      : '';
     const cells = [
       i + 1,
       d.raw || '',
       d.ip || '',
+      typeof d.latencyMs === 'number' ? d.latencyMs : '',
       d.country || '',
       d.region || '',
       d.city || '',
@@ -286,8 +338,13 @@ els.exportBtn.addEventListener('click', async () => {
       d.isHosting ? 'true' : 'false',
       d.isMobile ? 'true' : 'false',
       d.connectionType || '',
+      typeof d.abuseScore === 'number' ? d.abuseScore : '',
+      typeof d.abuseReports === 'number' ? d.abuseReports : '',
+      d.abuseLastReportedAt || '',
+      d.abuseUsageType || '',
       typeof d.score === 'number' ? d.score.toFixed(2) : '',
       d.scoreProvider || '',
+      allScores,
       d.status || '',
       d.error || '',
     ].map(csvEscape);
@@ -320,11 +377,15 @@ window.api.onProgress((data) => {
   if (!row) return;
   const patch = { stage: data.stage };
   if (data.ip) patch.ip = data.ip;
+  if (data.latencyMs !== undefined) patch.latencyMs = data.latencyMs;
   if (data.country !== undefined) patch.country = data.country;
   if (data.isp !== undefined) patch.isp = data.isp;
   if (data.isProxy !== undefined) patch.isProxy = data.isProxy;
   if (data.isHosting !== undefined) patch.isHosting = data.isHosting;
   if (data.isMobile !== undefined) patch.isMobile = data.isMobile;
+  if (data.abuseScore !== undefined) patch.abuseScore = data.abuseScore;
+  if (data.abuseReports !== undefined) patch.abuseReports = data.abuseReports;
+  if (data.abuseUsageType !== undefined) patch.abuseUsageType = data.abuseUsageType;
   if (data.error) patch.error = data.error;
   if (data.stage === 'ip-failed') patch.status = 'proxy-error';
   updateRow(data.index, patch);
@@ -348,17 +409,18 @@ window.api.onResult((data) => {
   }
 });
 
-window.api.onAborted(({ reason }) => {
-  setStatus(`İşlem durduruldu: ${reason}`);
-  alert(
-    `Skorlama durduruldu.\n\nSebep: ${reason}\n\n` +
-      'Bu hata IPQS hesap düzeyinde — tüm IP\'ler için aynısını dönecekti, ' +
-      'rate limit yakmamak için kalan proxy\'ler atlandı.'
-  );
+window.api.onAborted(({ reason, softAbort }) => {
+  setStatus(`Uyarı: ${reason}`);
+  if (softAbort) {
+    // Non-fatal: scoring continues with other sources
+    console.warn(reason);
+  } else {
+    alert(reason);
+  }
 });
 
-window.api.onDone(({ total, aborted }) => {
-  if (!aborted) setStatus(`Tamamlandı (${total} proxy).`);
+window.api.onDone(({ total }) => {
+  setStatus(`Tamamlandı (${total} proxy).`);
   setProgress(total, total);
   els.exportBtn.disabled = rows.length === 0;
 });

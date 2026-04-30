@@ -93,7 +93,7 @@ body {
   gap: 6px;
 }
 .field input {
-  width: 320px;
+  width: 240px;
   padding: 8px 10px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -285,8 +285,18 @@ tr.empty td {
 .col-ip {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 600;
-  width: 140px;
+  width: 150px;
 }
+.col-ip .latency {
+  display: block;
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.latency-fast { color: var(--ok); }
+.latency-mid { color: var(--warn); }
+.latency-slow { color: var(--bad); }
 .col-country {
   width: 70px;
 }
@@ -381,6 +391,10 @@ tr.empty td {
 .chip-mobile {
   background: rgba(91, 140, 255, 0.15);
   color: var(--accent);
+}
+.chip-abuse {
+  background: rgba(239, 93, 93, 0.15);
+  color: var(--bad);
 }
 .dot {
   display: inline-block;

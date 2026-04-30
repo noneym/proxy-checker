@@ -96,7 +96,6 @@ function httpGet(targetUrl, { agent = null, timeoutMs = 15000, headers = {} } = 
 
 async function detectIP(proxy) {
   const agent = new SocksProxyAgent(buildProxyUrl(proxy));
-  // Try ipify, fall back to ifconfig.me, then icanhazip
   const probes = [
     { url: 'https://api.ipify.org?format=json', extract: (b) => JSON.parse(b).ip },
     { url: 'https://ifconfig.me/ip', extract: (b) => b.trim() },
@@ -105,10 +104,12 @@ async function detectIP(proxy) {
   let lastErr;
   for (const probe of probes) {
     try {
+      const t0 = Date.now();
       const res = await httpGet(probe.url, { agent, timeoutMs: 15000 });
+      const latencyMs = Date.now() - t0;
       if (res.status === 200) {
         const ip = probe.extract(res.body);
-        if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip;
+        if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) return { ip, latencyMs };
       }
       lastErr = new Error(`HTTP ${res.status} from ${probe.url}`);
     } catch (e) {
@@ -167,6 +168,45 @@ async function getGetIpIntelScore(ip, contact) {
     apiStatus,
     httpStatus: res.status,
   };
+}
+
+async function getAbuseIpDbInfo(ip, apiKey) {
+  // AbuseIPDB free tier: 1000 checks/day with email-only signup.
+  // Returns abuseConfidenceScore (0-100) based on community abuse reports.
+  // Catches "burned" residential proxies that have been reported for spam/bot/scan.
+  try {
+    const res = await httpGet(
+      `https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(
+        ip
+      )}&maxAgeInDays=90&verbose`,
+      {
+        headers: { Key: apiKey, Accept: 'application/json' },
+        timeoutMs: 15000,
+      }
+    );
+    if (res.status === 401 || res.status === 403) {
+      return { error: 'AbuseIPDB: anahtar geçersiz', fatal: true };
+    }
+    if (res.status === 429) {
+      return { error: 'AbuseIPDB: günlük limit aşıldı', fatal: true };
+    }
+    if (res.status !== 200) return { error: `AbuseIPDB HTTP ${res.status}` };
+    const parsed = JSON.parse(res.body);
+    if (parsed.errors) {
+      return { error: parsed.errors.map((e) => e.detail).join(', '), fatal: true };
+    }
+    const d = parsed.data || {};
+    return {
+      abuseScore: d.abuseConfidenceScore,
+      totalReports: d.totalReports,
+      lastReportedAt: d.lastReportedAt,
+      isWhitelisted: d.isWhitelisted,
+      usageType: d.usageType,
+      isTor: d.isTor,
+    };
+  } catch (e) {
+    return { error: `AbuseIPDB: ${e.message || e}` };
+  }
 }
 
 async function getIpqsScore(ip, apiKey) {
@@ -252,8 +292,9 @@ async function pool(items, concurrency, fn) {
   return results;
 }
 
-ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
+ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKey }) => {
   const useIpqs = !!(ipqsKey && ipqsKey.trim());
+  const useAbuse = !!(abuseKey && abuseKey.trim());
   const proxies = (lines || [])
     .map((l) => ({ raw: l, parsed: parseProxy(l) }))
     .filter((x) => x.raw && x.raw.trim());
@@ -276,10 +317,12 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
       return;
     }
     try {
-      const ip = await detectIP(item.parsed);
+      const { ip, latencyMs } = await detectIP(item.parsed);
       const info = await getIpApiInfo(ip);
+      const abuse = useAbuse ? await getAbuseIpDbInfo(ip, abuseKey.trim()) : null;
       ipResults[idx] = {
         ip,
+        latencyMs,
         country: info.countryCode || info.country || '',
         countryName: info.country || '',
         region: info.regionName || info.region || '',
@@ -290,6 +333,12 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
         isProxy: info.proxy === true,
         isHosting: info.hosting === true,
         isMobile: info.mobile === true,
+        abuseScore: abuse && typeof abuse.abuseScore === 'number' ? abuse.abuseScore : null,
+        abuseReports: abuse && typeof abuse.totalReports === 'number' ? abuse.totalReports : null,
+        abuseLastReportedAt: abuse ? abuse.lastReportedAt : null,
+        abuseUsageType: abuse ? abuse.usageType : null,
+        abuseIsTor: abuse ? !!abuse.isTor : false,
+        abuseError: abuse && abuse.error ? abuse.error : null,
       };
       event.sender.send('check-progress', {
         index: idx,
@@ -297,11 +346,15 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
         stage: 'ip-detected',
         raw: item.raw,
         ip,
+        latencyMs,
         country: ipResults[idx].country,
         isp: ipResults[idx].isp,
         isProxy: ipResults[idx].isProxy,
         isHosting: ipResults[idx].isHosting,
         isMobile: ipResults[idx].isMobile,
+        abuseScore: ipResults[idx].abuseScore,
+        abuseReports: ipResults[idx].abuseReports,
+        abuseUsageType: ipResults[idx].abuseUsageType,
       });
     } catch (e) {
       ipResults[idx] = { error: e.message || String(e) };
@@ -315,9 +368,20 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
     }
   });
 
-  // Phase 2: scoring (serial, throttled)
+  // Phase 2: scoring. We collect signals from up to three sources and pick the
+  // worst (max score) so a single source missing a residential proxy doesn't
+  // mask abuse signal from another. Sources:
+  //   - AbuseIPDB (already fetched in phase 1) — abuseConfidenceScore 0-100
+  //   - IPQS — fraud_score 0-100, plus proxy/vpn/tor/active_vpn/recent_abuse flags
+  //   - getipintel — score 0-1 normalized to 0-100
+  // IPQS turns itself off if the account hits a fatal error mid-batch (e.g.
+  // insufficient credits) so we don't burn rate limit on guaranteed failures.
   const finalResults = [];
-  let aborted = false;
+  let activeIpqs = useIpqs;
+  let activeGetIntel = !useIpqs && !!(contact && contact.trim());
+
+  let warnedNoScorer = false;
+
   for (let i = 0; i < proxies.length; i++) {
     const item = proxies[i];
     const ipData = ipResults[i] || {};
@@ -343,69 +407,92 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey }) => {
       ip: ipData.ip,
     });
 
-    try {
-      const scoreResult = useIpqs
-        ? await getIpqsScore(ipData.ip, ipqsKey.trim())
-        : await getGetIpIntelScore(ipData.ip, contact);
-      result.score = scoreResult.score;
-      result.scoreRaw = scoreResult.raw;
-      result.scoreProvider = scoreResult.provider;
-      if (scoreResult.flags) {
-        result.isProxy = scoreResult.flags.proxy || result.isProxy;
-        result.isVpn = scoreResult.flags.vpn;
-        result.isTor = scoreResult.flags.tor;
-        result.isActiveVpn = scoreResult.flags.activeVpn;
-        result.isActiveTor = scoreResult.flags.activeTor;
-        result.isRecentAbuse = scoreResult.flags.recentAbuse;
-        result.isBot = scoreResult.flags.bot;
-        result.isCrawler = scoreResult.flags.crawler;
-        result.connectionType = scoreResult.flags.connectionType;
+    const candidates = [];
+    let lastErr = null;
+
+    // 1. AbuseIPDB (already fetched in phase 1)
+    if (typeof ipData.abuseScore === 'number') {
+      candidates.push({ provider: 'abuseipdb', score: ipData.abuseScore });
+    }
+    if (ipData.abuseError) lastErr = ipData.abuseError;
+
+    // 2. IPQS
+    if (activeIpqs) {
+      try {
+        const r = await getIpqsScore(ipData.ip, ipqsKey.trim());
+        if (r.flags) {
+          result.isProxy = r.flags.proxy || result.isProxy;
+          result.isVpn = r.flags.vpn;
+          result.isTor = r.flags.tor;
+          result.isActiveVpn = r.flags.activeVpn;
+          result.isActiveTor = r.flags.activeTor;
+          result.isRecentAbuse = r.flags.recentAbuse;
+          result.isBot = r.flags.bot;
+          result.isCrawler = r.flags.crawler;
+          result.connectionType = r.flags.connectionType;
+        }
+        if (r.apiStatus === 'success' && Number.isFinite(r.score)) {
+          candidates.push({ provider: 'ipqs', score: r.score });
+        } else {
+          lastErr = r.error || `ipqs: ${r.raw}`;
+          if (r.fatal) {
+            activeIpqs = false;
+            event.sender.send('check-aborted', {
+              reason: `IPQS devre dışı bırakıldı: ${r.error}`,
+              fatalSource: 'ipqs',
+              softAbort: true,
+            });
+          }
+        }
+      } catch (e) {
+        lastErr = `ipqs: ${e.message || e}`;
       }
-      if (
-        scoreResult.apiStatus !== 'success' ||
-        Number.isNaN(scoreResult.score)
-      ) {
-        result.status = 'score-error';
-        result.error =
-          scoreResult.error || `${scoreResult.provider}: ${scoreResult.raw}`;
-        if (scoreResult.fatal) aborted = scoreResult.error;
-      } else {
-        result.status = 'ok';
+    }
+
+    // 3. getipintel (only when no IPQS, to avoid wasting its tight rate limit)
+    if (activeGetIntel) {
+      try {
+        const r = await getGetIpIntelScore(ipData.ip, contact);
+        if (r.apiStatus === 'success' && Number.isFinite(r.score)) {
+          candidates.push({ provider: 'getipintel', score: r.score });
+        } else {
+          lastErr = r.error || `getipintel: ${r.raw}`;
+        }
+      } catch (e) {
+        lastErr = `getipintel: ${e.message || e}`;
       }
-    } catch (e) {
+    }
+
+    if (candidates.length > 0) {
+      // Pick highest score across sources — abuse signal from any source counts.
+      const top = candidates.reduce((a, b) => (a.score > b.score ? a : b));
+      result.score = top.score;
+      result.scoreProvider = top.provider;
+      result.scoreSources = candidates;
+      result.status = 'ok';
+    } else {
       result.status = 'score-error';
-      result.error = e.message || String(e);
+      result.error = lastErr || 'Hiçbir scorer yapılandırılmamış';
+      if (!warnedNoScorer && !activeIpqs && !activeGetIntel && !useAbuse) {
+        warnedNoScorer = true;
+        event.sender.send('check-aborted', {
+          reason:
+            'Hiçbir scorer yapılandırılmamış. AbuseIPDB key veya getipintel için email gir.',
+          fatalSource: 'config',
+        });
+      }
     }
 
     finalResults.push(result);
     event.sender.send('check-result', result);
 
-    if (aborted) {
-      // Mark remaining proxies as aborted so the user sees them, but don't burn
-      // the rate limit on calls that will all return the same error.
-      for (let j = i + 1; j < proxies.length; j++) {
-        const remainingItem = proxies[j];
-        const remainingIp = (ipResults[j] && ipResults[j].ip) || '';
-        const remainingResult = {
-          index: j,
-          raw: remainingItem.raw,
-          ...(ipResults[j] || {}),
-          ip: remainingIp,
-          status: 'score-error',
-          error: `Atlandı: ${aborted}`,
-        };
-        finalResults.push(remainingResult);
-        event.sender.send('check-result', remainingResult);
-      }
-      event.sender.send('check-aborted', { reason: aborted });
-      break;
+    // Throttle only when getipintel is the active scorer (15/min limit).
+    if (i < proxies.length - 1) {
+      await sleep(activeGetIntel ? 4500 : 300);
     }
-
-    // getipintel free tier: 15/min → 4.5s gap. IPQS: 300ms.
-    if (i < proxies.length - 1) await sleep(useIpqs ? 300 : 4500);
   }
 
-  event.sender.send('check-done', { total, results: finalResults, aborted });
+  event.sender.send('check-done', { total, results: finalResults });
   return finalResults;
 });
 
