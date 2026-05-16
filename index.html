@@ -20,7 +20,7 @@
           <div class="field">
             <label for="email">
               Contact email
-              <span class="field-help">(getipintel — residential proxy detection, ücretsiz)</span>
+              <span class="field-help">(getipintel — residential proxy detection)</span>
             </label>
             <input id="email" type="email" placeholder="email@example.com" />
           </div>
@@ -30,13 +30,6 @@
               <a class="field-help" href="https://www.abuseipdb.com/register" target="_blank" rel="noopener">1k/gün ücretsiz →</a>
             </label>
             <input id="abuse-key" type="text" placeholder="abuse history sinyali için (opsiyonel)" />
-          </div>
-          <div class="field">
-            <label for="ipqs-key">
-              IPQualityScore API key
-              <a class="field-help" href="https://www.ipqualityscore.com/create-account" target="_blank" rel="noopener">paid →</a>
-            </label>
-            <input id="ipqs-key" type="text" placeholder="(opsiyonel)" />
           </div>
         </div>
       </header>
@@ -58,6 +51,10 @@
           <button id="check-btn" class="primary">Kontrol Et</button>
           <button id="clear-btn">Temizle</button>
           <button id="export-btn" disabled>CSV Olarak Dışa Aktar</button>
+          <label class="check-option" title="AbuseIPDB'de raporu olan IP'ler için getipintel çağrılmaz, doğrudan 'Atlandı' olarak işaretlenir. getipintel rate limit'ini (15/dk) temiz adaylar için saklar.">
+            <input type="checkbox" id="skip-reported" />
+            <span>Raporu olan IP'leri atla</span>
+          </label>
           <div class="spacer"></div>
           <span id="proxy-count" class="muted">0 proxy</span>
         </div>

@@ -227,67 +227,6 @@ async function getAbuseIpDbInfo(ip, apiKey) {
   }
 }
 
-async function getIpqsScore(ip, apiKey) {
-  // strictness=1: balanced. allow_public_access_points=true: avoid false positives on shared wifi.
-  const url = `https://www.ipqualityscore.com/api/json/ip/${encodeURIComponent(
-    apiKey
-  )}/${encodeURIComponent(ip)}?strictness=1&allow_public_access_points=true`;
-  const res = await httpGet(url, { timeoutMs: 30000 });
-  const raw = (res.body || '').trim();
-  let data = {};
-  try {
-    data = JSON.parse(raw);
-  } catch (e) {
-    return {
-      provider: 'ipqs',
-      score: NaN,
-      raw,
-      apiStatus: 'error',
-      error: 'Geçersiz IPQS yanıtı',
-    };
-  }
-  if (!data.success) {
-    const msg = (data.message || '').toLowerCase();
-    // Account-level errors that affect every subsequent call too. Surface as fatal
-    // so the caller can abort the batch instead of repeating the same error per IP.
-    const fatal =
-      msg.includes('insufficient credit') ||
-      msg.includes('unauthorized') ||
-      msg.includes('invalid') ||
-      msg.includes('disabled') ||
-      msg.includes('exceeded');
-    return {
-      provider: 'ipqs',
-      score: NaN,
-      raw,
-      apiStatus: 'error',
-      fatal,
-      error: data.message || 'IPQS hatası',
-    };
-  }
-  return {
-    provider: 'ipqs',
-    score: typeof data.fraud_score === 'number' ? data.fraud_score : NaN,
-    raw,
-    apiStatus: 'success',
-    flags: {
-      proxy: !!data.proxy,
-      vpn: !!data.vpn,
-      tor: !!data.tor,
-      activeVpn: !!data.active_vpn,
-      activeTor: !!data.active_tor,
-      recentAbuse: !!data.recent_abuse,
-      bot: !!data.bot_status,
-      mobile: !!data.mobile,
-      crawler: !!data.is_crawler,
-      connectionType: data.connection_type || '',
-    },
-    isp: data.ISP || '',
-    asn: data.ASN || '',
-    countryCode: data.country_code || '',
-  };
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -310,9 +249,9 @@ async function pool(items, concurrency, fn) {
   return results;
 }
 
-ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKey }) => {
-  const useIpqs = !!(ipqsKey && ipqsKey.trim());
+ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipReported }) => {
   const useAbuse = !!(abuseKey && abuseKey.trim());
+  const skipReportedIps = !!skipReported;
   const proxies = (lines || [])
     .map((l) => ({ raw: l, parsed: parseProxy(l) }))
     .filter((x) => x.raw && x.raw.trim());
@@ -386,22 +325,15 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
     }
   });
 
-  // Phase 2: scoring. We collect signals from up to three sources and pick the
-  // worst (max score) so a single source missing a residential proxy doesn't
-  // mask abuse signal from another. Sources:
+  // Phase 2: scoring. Two free sources, max-score wins.
   //   - AbuseIPDB (already fetched in phase 1) — abuseConfidenceScore 0-100
-  //   - IPQS — fraud_score 0-100, plus proxy/vpn/tor/active_vpn/recent_abuse flags
-  //   - getipintel — score 0-1 normalized to 0-100
-  // IPQS turns itself off if the account hits a fatal error mid-batch (e.g.
-  // insufficient credits) so we don't burn rate limit on guaranteed failures.
+  //   - getipintel + oflags=r — residential proxy probability 0-1 → *100
+  // skip-reported: if the user opted in AND AbuseIPDB found any abuse signal
+  // for this IP (current reports, abuse score, or older lastReportedAt), we
+  // skip the getipintel call entirely. Saves the 15/min rate limit budget
+  // for proxies that aren't already known-bad and shortens total run time.
   const finalResults = [];
-  let activeIpqs = useIpqs;
-  // Run getipintel whenever an email is provided, independent of IPQS. They
-  // give different signals (getipintel oflags=r = residential proxy probability,
-  // IPQS = ML fraud_score) and we want both as candidates when available.
-  // The 15/min rate limit is enforced by the 4.5s inter-iteration sleep below.
-  let activeGetIntel = !!(contact && contact.trim());
-
+  const activeGetIntel = !!(contact && contact.trim());
   let warnedNoScorer = false;
 
   for (let i = 0; i < proxies.length; i++) {
@@ -438,45 +370,20 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
     }
     if (ipData.abuseError) lastErr = ipData.abuseError;
 
-    // 2. IPQS
-    if (activeIpqs) {
-      try {
-        const r = await getIpqsScore(ipData.ip, ipqsKey.trim());
-        if (r.flags) {
-          result.isProxy = r.flags.proxy || result.isProxy;
-          result.isVpn = r.flags.vpn;
-          result.isTor = r.flags.tor;
-          result.isActiveVpn = r.flags.activeVpn;
-          result.isActiveTor = r.flags.activeTor;
-          result.isRecentAbuse = r.flags.recentAbuse;
-          result.isBot = r.flags.bot;
-          result.isCrawler = r.flags.crawler;
-          result.connectionType = r.flags.connectionType;
-        }
-        if (r.apiStatus === 'success' && Number.isFinite(r.score)) {
-          candidates.push({ provider: 'ipqs', score: r.score });
-        } else {
-          lastErr = r.error || `ipqs: ${r.raw}`;
-          if (r.fatal) {
-            activeIpqs = false;
-            event.sender.send('check-aborted', {
-              reason: `IPQS devre dışı bırakıldı: ${r.error}`,
-              fatalSource: 'ipqs',
-              softAbort: true,
-            });
-          }
-        }
-      } catch (e) {
-        lastErr = `ipqs: ${e.message || e}`;
-      }
-    }
+    // Skip-reported short-circuit: any abuse signal → don't burn getipintel
+    // budget on a proxy that's already known to be reported.
+    const hasAbuseSignal =
+      (typeof ipData.abuseScore === 'number' && ipData.abuseScore > 0) ||
+      (typeof ipData.abuseReports === 'number' && ipData.abuseReports > 0) ||
+      !!ipData.abuseLastReportedAt;
+    const willCallGetIntel = activeGetIntel && !(skipReportedIps && hasAbuseSignal);
+    const wasSkipped = activeGetIntel && skipReportedIps && hasAbuseSignal;
 
-    // 3. getipintel (only when no IPQS, to avoid wasting its tight rate limit)
-    if (activeGetIntel) {
+    // 2. getipintel
+    if (willCallGetIntel) {
       try {
         const r = await getGetIpIntelScore(ipData.ip, contact);
         if (r.apiStatus === 'success' && Number.isFinite(r.score)) {
-          // Score here = ResidentialProxy probability (preferred) or combined.
           candidates.push({ provider: 'getipintel', score: r.score });
         } else {
           lastErr = r.error || `getipintel: ${r.raw}`;
@@ -493,8 +400,17 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
       }
     }
 
-    if (candidates.length > 0) {
-      // Pick highest score across sources — abuse signal from any source counts.
+    if (wasSkipped) {
+      result.status = 'skipped-reported';
+      // We still surface AbuseIPDB score as the row's score so it sorts/colors
+      // sensibly; the "Atlandı (raporlu)" badge tells the user why.
+      if (candidates.length > 0) {
+        const top = candidates.reduce((a, b) => (a.score > b.score ? a : b));
+        result.score = top.score;
+        result.scoreProvider = top.provider;
+        result.scoreSources = candidates;
+      }
+    } else if (candidates.length > 0) {
       const top = candidates.reduce((a, b) => (a.score > b.score ? a : b));
       result.score = top.score;
       result.scoreProvider = top.provider;
@@ -503,7 +419,7 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
     } else {
       result.status = 'score-error';
       result.error = lastErr || 'Hiçbir scorer yapılandırılmamış';
-      if (!warnedNoScorer && !activeIpqs && !activeGetIntel && !useAbuse) {
+      if (!warnedNoScorer && !activeGetIntel && !useAbuse) {
         warnedNoScorer = true;
         event.sender.send('check-aborted', {
           reason:
@@ -516,9 +432,9 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
     finalResults.push(result);
     event.sender.send('check-result', result);
 
-    // Throttle only when getipintel is the active scorer (15/min limit).
+    // Throttle only when we actually hit getipintel (15/min limit).
     if (i < proxies.length - 1) {
-      await sleep(activeGetIntel ? 4500 : 300);
+      await sleep(willCallGetIntel ? 4500 : 300);
     }
   }
 

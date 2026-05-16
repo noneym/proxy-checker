@@ -1,7 +1,7 @@
 const els = {
   email: document.getElementById('email'),
-  ipqsKey: document.getElementById('ipqs-key'),
   abuseKey: document.getElementById('abuse-key'),
+  skipReported: document.getElementById('skip-reported'),
   proxies: document.getElementById('proxies'),
   checkBtn: document.getElementById('check-btn'),
   clearBtn: document.getElementById('clear-btn'),
@@ -13,19 +13,22 @@ const els = {
   resultsBody: document.getElementById('results-body'),
 };
 
-// Restore saved credentials
+// Restore saved settings
 els.email.value = localStorage.getItem('contactEmail') || '';
-els.ipqsKey.value = localStorage.getItem('ipqsApiKey') || '';
 els.abuseKey.value = localStorage.getItem('abuseIpDbApiKey') || '';
+els.skipReported.checked = localStorage.getItem('skipReported') === '1';
 els.email.addEventListener('input', () => {
   localStorage.setItem('contactEmail', els.email.value.trim());
-});
-els.ipqsKey.addEventListener('input', () => {
-  localStorage.setItem('ipqsApiKey', els.ipqsKey.value.trim());
 });
 els.abuseKey.addEventListener('input', () => {
   localStorage.setItem('abuseIpDbApiKey', els.abuseKey.value.trim());
 });
+els.skipReported.addEventListener('change', () => {
+  localStorage.setItem('skipReported', els.skipReported.checked ? '1' : '0');
+});
+
+// Clean up the old IPQS key from localStorage if present (legacy)
+localStorage.removeItem('ipqsApiKey');
 
 // Live proxy count
 function updateProxyCount() {
@@ -109,7 +112,6 @@ function updateRow(index, patch) {
   const scoreCell = cells[6];
   if (typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0) {
     const providerLabels = {
-      ipqs: 'IPQS fraud',
       getipintel: 'gII residential',
       abuseipdb: 'AbuseIPDB',
     };
@@ -156,13 +158,7 @@ function renderTypeChips(d) {
   if (!d.ip) return '—';
   const chips = [];
   if (d.isProxy) chips.push('<span class="chip chip-proxy">Proxy</span>');
-  if (d.isVpn) chips.push('<span class="chip chip-proxy">VPN</span>');
-  if (d.isTor || d.abuseIsTor) chips.push('<span class="chip chip-proxy">Tor</span>');
-  if (d.isActiveVpn)
-    chips.push('<span class="chip chip-proxy" title="Şu anda aktif VPN trafiği">Active VPN</span>');
-  if (d.isRecentAbuse)
-    chips.push('<span class="chip chip-proxy" title="Son zamanlarda kötüye kullanım">Abuse</span>');
-  if (d.isBot) chips.push('<span class="chip chip-proxy">Bot</span>');
+  if (d.abuseIsTor) chips.push('<span class="chip chip-proxy">Tor</span>');
   // Residential proxy probability from getipintel oflags=r
   if (typeof d.residentialScore === 'number' && d.residentialScore >= 30) {
     chips.push(
@@ -192,30 +188,33 @@ function renderTypeChips(d) {
 }
 
 function scoreClass(s) {
-  // 0-100 scale (works for both IPQS fraud_score and getipintel*100)
+  // 0-100 scale (AbuseIPDB confidence or getipintel residential * 100)
   if (s < 50) return 'score-ok';
   if (s < 85) return 'score-warn';
   return 'score-bad';
 }
 
 function renderStatus(d) {
-  // Combine signals from ip-api flags + IPQS/getipintel score (0-100 normalized).
   if (d.status === 'proxy-error')
     return `<span class="badge badge-error" title="${escapeAttr(
       d.error || ''
     )}">Proxy hata</span>`;
 
+  // Intentionally skipped because of existing abuse reports
+  if (d.status === 'skipped-reported')
+    return `<span class="badge badge-skipped" title="${escapeAttr(
+      'AbuseIPDB raporu olduğu için getipintel atlandı'
+    )}">Atlandı (raporlu)</span>`;
+
   const hasScore =
     typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0;
 
-  // Hard fail: any explicit proxy/vpn/tor/abuse flag OR very high score OR
-  // strong getipintel residential proxy signal
+  // Hard fail: explicit proxy/tor/hosting flag from ip-api/abuse OR strong
+  // residential proxy signal OR very high composite score
   const hardFlag =
     d.isProxy ||
-    d.isVpn ||
     d.isTor ||
-    d.isActiveVpn ||
-    d.isRecentAbuse ||
+    d.abuseIsTor ||
     d.isResidentialProxy ||
     (typeof d.residentialScore === 'number' && d.residentialScore >= 50);
   if (hardFlag || (hasScore && d.score >= 85))
@@ -263,21 +262,18 @@ els.clearBtn.addEventListener('click', () => {
 els.checkBtn.addEventListener('click', async () => {
   if (isRunning) return;
   const contact = els.email.value.trim();
-  const ipqsKey = els.ipqsKey.value.trim();
   const abuseKey = els.abuseKey.value.trim();
+  const skipReported = els.skipReported.checked;
   const hasAnyScorer = !!(
-    ipqsKey ||
-    abuseKey ||
-    (contact && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact))
+    abuseKey || (contact && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact))
   );
   if (!hasAnyScorer) {
     alert(
       'En az bir scorer yapılandır:\n\n' +
-        '• AbuseIPDB key (önerilen, 1k/gün ücretsiz)\n' +
-        '• IPQS key (paid, residential detection için)\n' +
-        '• getipintel için contact email (residential\'larda 0 dönebilir)'
+        '• Contact email — getipintel (residential proxy detection, ücretsiz)\n' +
+        '• AbuseIPDB key — 1k/gün ücretsiz, abuse history sinyali'
     );
-    els.abuseKey.focus();
+    els.email.focus();
     return;
   }
   const lines = els.proxies.value
@@ -300,15 +296,15 @@ els.checkBtn.addEventListener('click', async () => {
   els.exportBtn.disabled = true;
   const scorers = [
     abuseKey ? 'AbuseIPDB' : null,
-    ipqsKey ? 'IPQS' : null,
-    !ipqsKey && contact ? 'getipintel' : null,
+    contact ? 'getipintel' : null,
+    skipReported ? 'skip-reported' : null,
   ].filter(Boolean);
-  setStatus(`Proxy IP'leri tespit ediliyor... (scorers: ${scorers.join(', ')})`);
+  setStatus(`Proxy IP'leri tespit ediliyor... (${scorers.join(', ')})`);
   setProgress(0, lines.length);
   setCounter(`0 / ${lines.length}`);
 
   try {
-    await window.api.checkProxies({ lines, contact, ipqsKey, abuseKey });
+    await window.api.checkProxies({ lines, contact, abuseKey, skipReported });
   } catch (e) {
     setStatus('Hata: ' + (e.message || String(e)));
   } finally {
@@ -331,13 +327,9 @@ els.exportBtn.addEventListener('click', async () => {
     'ISP',
     'AS',
     'Proxy',
-    'VPN',
     'Tor',
-    'ActiveVPN',
-    'RecentAbuse',
     'Hosting',
     'Mobile',
-    'ConnectionType',
     'AbuseScore',
     'AbuseReports',
     'AbuseLastReportedAt',
@@ -367,13 +359,9 @@ els.exportBtn.addEventListener('click', async () => {
       d.isp || '',
       d.as || '',
       d.isProxy ? 'true' : 'false',
-      d.isVpn ? 'true' : 'false',
-      d.isTor ? 'true' : 'false',
-      d.isActiveVpn ? 'true' : 'false',
-      d.isRecentAbuse ? 'true' : 'false',
+      d.abuseIsTor ? 'true' : 'false',
       d.isHosting ? 'true' : 'false',
       d.isMobile ? 'true' : 'false',
-      d.connectionType || '',
       typeof d.abuseScore === 'number' ? d.abuseScore : '',
       typeof d.abuseReports === 'number' ? d.abuseReports : '',
       d.abuseLastReportedAt || '',
@@ -447,14 +435,9 @@ window.api.onResult((data) => {
   }
 });
 
-window.api.onAborted(({ reason, softAbort }) => {
+window.api.onAborted(({ reason }) => {
   setStatus(`Uyarı: ${reason}`);
-  if (softAbort) {
-    // Non-fatal: scoring continues with other sources
-    console.warn(reason);
-  } else {
-    alert(reason);
-  }
+  console.warn(reason);
 });
 
 window.api.onDone(({ total }) => {

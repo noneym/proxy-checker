@@ -7,14 +7,14 @@ Electron tabanlı masaüstü uygulaması. Proxy listesindeki her proxy üzerinde
 - SOCKS5 / SOCKS4 / HTTP / HTTPS proxy desteği
 - Proxy üzerinden gerçek çıkış IP tespiti (api.ipify.org / ifconfig.me / icanhazip) + **latency ms** ölçümü
 - IP zenginleştirme: ülke, şehir, ISP, AS, proxy/hosting/mobile flag'leri (ip-api.com)
-- **Çoklu scorer desteği** — en yüksek skoru gösterir:
-  - **getipintel.net + `oflags=r`** (ücretsiz, sadece email) — combined score + `ResidentialProxy` probability. residential proxy detection için **bu uygulamanın primary scorer'ı**
-  - **AbuseIPDB** (önerilen ek sinyal, 1k/gün ücretsiz) — abuseConfidenceScore + 365-günlük rapor geçmişi
-  - **IPQualityScore** (paid plan) — opsiyonel, varsa fraud_score
+- **İki ücretsiz scorer** — en yüksek skor kazanır:
+  - **getipintel.net + `oflags=r`** (sadece email) — `ResidentialProxy` probability. residential proxy detection için primary scorer
+  - **AbuseIPDB** (1k/gün ücretsiz, opsiyonel) — abuseConfidenceScore + 365-günlük rapor geçmişi
+- **"Raporu olan IP'leri atla" checkbox** — AbuseIPDB'de rapor olan IP'ler için getipintel atlanır, getipintel'in 15/dk rate limit'i temiz adaylara saklanır
 - Eşzamanlı IP tespiti (5 paralel)
-- Akıllı throttling: getipintel için 4.5s (15/dk limiti), AbuseIPDB/IPQS için 300ms
+- Akıllı throttling: getipintel çağırılırken 4.5s gap, atlanırsa 300ms
 - CSV export: tüm sinyaller, latency, residentialProxy %, AbuseIPDB detayları, scoreSources breakdown
-- Renkli skor + chip'li tip göstergesi (Proxy/VPN/Tor/Abuse/Hosting/Mobile/Residential Proxy %)
+- Renkli skor + chip'li tip göstergesi (Proxy/Tor/Hosting/Mobile/Residential Proxy %)
 
 ## Kurulum
 
@@ -25,9 +25,9 @@ npm start
 
 ## Kullanım
 
-1. **Contact email** gir (zorunlu önerilen) — getipintel.net'in residential proxy detection'ı için. Hesap açmaya gerek yok, sadece email lazım.
+1. **Contact email** gir — getipintel.net residential proxy detection için. Hesap açmaya gerek yok, sadece email lazım.
 2. (Opsiyonel) **AbuseIPDB API key** — https://www.abuseipdb.com/register ücretsiz signup, abuse rapor geçmişi sinyali
-3. (Opsiyonel) **IPQualityScore API key** — paid plan
+3. (Opsiyonel) **"Raporu olan IP'leri atla"** checkbox'ı işaretle — büyük listede getipintel rate limit'i temiz adaylar için saklanır
 4. Proxy listesini yapıştır. Her satıra bir proxy. Format örnekleri:
    ```
    socks5://kullanici:sifre@host.example.com:10000
@@ -45,7 +45,7 @@ npm start
 | 50 – 84 | Şüpheli |
 | ≥ 85 | VPN / Proxy / Tor olarak işaretli |
 
-Ek olarak şu flag'ler tek başlarına da kırmızı VPN/Proxy etiketi tetikler: `proxy`, `vpn`, `tor`, `active_vpn`, `recent_abuse`.
+Ek olarak şu sinyaller tek başlarına da kırmızı VPN/Proxy etiketi tetikler: ip-api `proxy=true`, AbuseIPDB `isTor=true`, getipintel `ResidentialProxy ≥ 30%`.
 
 ## getipintel `oflags=r` notu
 
@@ -66,14 +66,14 @@ Uygulama bunu otomatik kullanıyor.
 | Sinyal | Maliyet | Ne yakalar |
 |---|---|---|
 | getipintel + oflags=r | Ücretsiz (email) | Residential proxy + VPN + blacklist (combined) |
-| AbuseIPDB | Ücretsiz (1k/gün, signup) | Spam/bot/scan rapor geçmişi |
+| AbuseIPDB | Ücretsiz (1k/gün, signup) | Spam/bot/scan rapor geçmişi (365 gün) |
 | ip-api | Ücretsiz (45/dk) | Proxy/hosting/mobile boolean'ları |
 | Latency | Ücretsiz | Yavaş proxy = burned/aşırı kullanılan |
-| IPQualityScore | Paid | ML-based residential ağı tanıma |
 
 ## Notlar
 
-- getipintel.net free tier: günde 500, dakikada 15 istek limiti vardır.
+- getipintel.net free tier: günde 500, dakikada 15 istek limiti.
 - ip-api.com free: 45 istek/dakika, anahtar gerektirmez (HTTP).
-- IPQualityScore free: 5000 istek/ay, signup gerektirir.
+- AbuseIPDB free: 1000 istek/gün, email signup.
 - Uygulama proxy üzerinden 15 saniye timeout kullanır; ölü proxyler otomatik atlanır.
+- "Raporu olan IP'leri atla" işaretliyse: AbuseIPDB'de rapor olan IP'ler için getipintel çağrılmaz, doğrudan "Atlandı (raporlu)" badge'i atanır. Büyük listelerde getipintel rate limit'ini korur ve toplam süreyi düşürür.
