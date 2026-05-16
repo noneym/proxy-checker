@@ -249,6 +249,35 @@ async function pool(items, concurrency, fn) {
   return results;
 }
 
+/**
+ * Serializes async fn calls with a minimum gap between them. Used to feed
+ * pipelined getipintel calls into a single rate-limited stream while the
+ * upstream phase-1 work (IP detection + ip-api + AbuseIPDB) runs in parallel.
+ */
+class ScoringGate {
+  constructor(minGapMs) {
+    this.minGapMs = minGapMs;
+    this.lastCallAt = 0;
+    this._tail = Promise.resolve();
+  }
+  run(fn) {
+    const promise = this._tail.then(async () => {
+      if (this.lastCallAt > 0) {
+        const elapsed = Date.now() - this.lastCallAt;
+        if (elapsed < this.minGapMs) await sleep(this.minGapMs - elapsed);
+      }
+      try {
+        return await fn();
+      } finally {
+        this.lastCallAt = Date.now();
+      }
+    });
+    // Tail chain must not break on caller errors; swallow for chain continuity.
+    this._tail = promise.catch(() => {});
+    return promise;
+  }
+}
+
 ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipReported }) => {
   const useAbuse = !!(abuseKey && abuseKey.trim());
   const skipReportedIps = !!skipReported;
@@ -259,25 +288,51 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipRe
   const total = proxies.length;
   event.sender.send('check-started', { total });
 
-  // Phase 1: detect IP through proxy + ipinfo lookup (parallel)
-  const ipResults = new Array(total);
+  // Pipelined execution:
+  //   - 5 parallel workers each run the full per-proxy flow:
+  //     detectIP → ip-api → AbuseIPDB → (gated) getipintel → emit result
+  //   - getipintel calls funnel through a single ScoringGate that enforces
+  //     getipintel's 15/min rate limit (4.5s min gap between calls).
+  //   - First completed phase-1 immediately enters the gate, so scoring
+  //     starts as soon as the first IP is known instead of waiting for the
+  //     entire batch's phase-1 to finish.
+  const activeGetIntel = !!(contact && contact.trim());
+  const gate = new ScoringGate(4500);
+  const finalResults = new Array(total);
+
+  if (!activeGetIntel && !useAbuse) {
+    event.sender.send('check-aborted', {
+      reason:
+        'Hiçbir scorer yapılandırılmamış. AbuseIPDB key veya getipintel için email gir.',
+      fatalSource: 'config',
+    });
+  }
+
   await pool(proxies, 5, async (item, idx) => {
+    const result = { index: idx, raw: item.raw };
+
     if (!item.parsed) {
-      ipResults[idx] = { error: 'Geçersiz format' };
+      result.status = 'proxy-error';
+      result.error = 'Geçersiz format';
+      finalResults[idx] = result;
       event.sender.send('check-progress', {
         index: idx,
         total,
         stage: 'ip-failed',
         raw: item.raw,
-        error: 'Geçersiz format',
+        error: result.error,
       });
+      event.sender.send('check-result', result);
       return;
     }
+
+    // Phase 1: IP detection + enrichment + AbuseIPDB (per proxy, no global wait)
+    let ipData;
     try {
       const { ip, latencyMs } = await detectIP(item.parsed);
       const info = await getIpApiInfo(ip);
       const abuse = useAbuse ? await getAbuseIpDbInfo(ip, abuseKey.trim()) : null;
-      ipResults[idx] = {
+      ipData = {
         ip,
         latencyMs,
         country: info.countryCode || info.country || '',
@@ -297,6 +352,7 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipRe
         abuseIsTor: abuse ? !!abuse.isTor : false,
         abuseError: abuse && abuse.error ? abuse.error : null,
       };
+      Object.assign(result, ipData);
       event.sender.send('check-progress', {
         index: idx,
         total,
@@ -304,74 +360,38 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipRe
         raw: item.raw,
         ip,
         latencyMs,
-        country: ipResults[idx].country,
-        isp: ipResults[idx].isp,
-        isProxy: ipResults[idx].isProxy,
-        isHosting: ipResults[idx].isHosting,
-        isMobile: ipResults[idx].isMobile,
-        abuseScore: ipResults[idx].abuseScore,
-        abuseReports: ipResults[idx].abuseReports,
-        abuseUsageType: ipResults[idx].abuseUsageType,
+        country: ipData.country,
+        isp: ipData.isp,
+        isProxy: ipData.isProxy,
+        isHosting: ipData.isHosting,
+        isMobile: ipData.isMobile,
+        abuseScore: ipData.abuseScore,
+        abuseReports: ipData.abuseReports,
+        abuseUsageType: ipData.abuseUsageType,
       });
     } catch (e) {
-      ipResults[idx] = { error: e.message || String(e) };
+      result.status = 'proxy-error';
+      result.error = e.message || String(e);
+      finalResults[idx] = result;
       event.sender.send('check-progress', {
         index: idx,
         total,
         stage: 'ip-failed',
         raw: item.raw,
-        error: e.message || String(e),
+        error: result.error,
       });
-    }
-  });
-
-  // Phase 2: scoring. Two free sources, max-score wins.
-  //   - AbuseIPDB (already fetched in phase 1) — abuseConfidenceScore 0-100
-  //   - getipintel + oflags=r — residential proxy probability 0-1 → *100
-  // skip-reported: if the user opted in AND AbuseIPDB found any abuse signal
-  // for this IP (current reports, abuse score, or older lastReportedAt), we
-  // skip the getipintel call entirely. Saves the 15/min rate limit budget
-  // for proxies that aren't already known-bad and shortens total run time.
-  const finalResults = [];
-  const activeGetIntel = !!(contact && contact.trim());
-  let warnedNoScorer = false;
-
-  for (let i = 0; i < proxies.length; i++) {
-    const item = proxies[i];
-    const ipData = ipResults[i] || {};
-    const result = {
-      index: i,
-      raw: item.raw,
-      ...ipData,
-    };
-
-    if (ipData.error || !ipData.ip) {
-      result.status = 'proxy-error';
-      result.error = ipData.error || 'IP yok';
-      finalResults.push(result);
       event.sender.send('check-result', result);
-      continue;
+      return;
     }
 
-    event.sender.send('check-progress', {
-      index: i,
-      total,
-      stage: 'scoring',
-      raw: item.raw,
-      ip: ipData.ip,
-    });
-
+    // Phase 2: build candidates + (gated) getipintel
     const candidates = [];
-    let lastErr = null;
+    let lastErr = ipData.abuseError || null;
 
-    // 1. AbuseIPDB (already fetched in phase 1)
     if (typeof ipData.abuseScore === 'number') {
       candidates.push({ provider: 'abuseipdb', score: ipData.abuseScore });
     }
-    if (ipData.abuseError) lastErr = ipData.abuseError;
 
-    // Skip-reported short-circuit: any abuse signal → don't burn getipintel
-    // budget on a proxy that's already known to be reported.
     const hasAbuseSignal =
       (typeof ipData.abuseScore === 'number' && ipData.abuseScore > 0) ||
       (typeof ipData.abuseReports === 'number' && ipData.abuseReports > 0) ||
@@ -379,10 +399,16 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipRe
     const willCallGetIntel = activeGetIntel && !(skipReportedIps && hasAbuseSignal);
     const wasSkipped = activeGetIntel && skipReportedIps && hasAbuseSignal;
 
-    // 2. getipintel
     if (willCallGetIntel) {
+      event.sender.send('check-progress', {
+        index: idx,
+        total,
+        stage: 'scoring',
+        raw: item.raw,
+        ip: ipData.ip,
+      });
       try {
-        const r = await getGetIpIntelScore(ipData.ip, contact);
+        const r = await gate.run(() => getGetIpIntelScore(ipData.ip, contact));
         if (r.apiStatus === 'success' && Number.isFinite(r.score)) {
           candidates.push({ provider: 'getipintel', score: r.score });
         } else {
@@ -402,8 +428,6 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipRe
 
     if (wasSkipped) {
       result.status = 'skipped-reported';
-      // We still surface AbuseIPDB score as the row's score so it sorts/colors
-      // sensibly; the "Atlandı (raporlu)" badge tells the user why.
       if (candidates.length > 0) {
         const top = candidates.reduce((a, b) => (a.score > b.score ? a : b));
         result.score = top.score;
@@ -419,24 +443,11 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, abuseKey, skipRe
     } else {
       result.status = 'score-error';
       result.error = lastErr || 'Hiçbir scorer yapılandırılmamış';
-      if (!warnedNoScorer && !activeGetIntel && !useAbuse) {
-        warnedNoScorer = true;
-        event.sender.send('check-aborted', {
-          reason:
-            'Hiçbir scorer yapılandırılmamış. AbuseIPDB key veya getipintel için email gir.',
-          fatalSource: 'config',
-        });
-      }
     }
 
-    finalResults.push(result);
+    finalResults[idx] = result;
     event.sender.send('check-result', result);
-
-    // Throttle only when we actually hit getipintel (15/min limit).
-    if (i < proxies.length - 1) {
-      await sleep(willCallGetIntel ? 4500 : 300);
-    }
-  }
+  });
 
   event.sender.send('check-done', { total, results: finalResults });
   return finalResults;
