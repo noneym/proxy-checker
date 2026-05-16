@@ -396,7 +396,11 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
   // insufficient credits) so we don't burn rate limit on guaranteed failures.
   const finalResults = [];
   let activeIpqs = useIpqs;
-  let activeGetIntel = !useIpqs && !!(contact && contact.trim());
+  // Run getipintel whenever an email is provided, independent of IPQS. They
+  // give different signals (getipintel oflags=r = residential proxy probability,
+  // IPQS = ML fraud_score) and we want both as candidates when available.
+  // The 15/min rate limit is enforced by the 4.5s inter-iteration sleep below.
+  let activeGetIntel = !!(contact && contact.trim());
 
   let warnedNoScorer = false;
 
