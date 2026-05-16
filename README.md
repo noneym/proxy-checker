@@ -8,14 +8,13 @@ Electron tabanlı masaüstü uygulaması. Proxy listesindeki her proxy üzerinde
 - Proxy üzerinden gerçek çıkış IP tespiti (api.ipify.org / ifconfig.me / icanhazip) + **latency ms** ölçümü
 - IP zenginleştirme: ülke, şehir, ISP, AS, proxy/hosting/mobile flag'leri (ip-api.com)
 - **Çoklu scorer desteği** — en yüksek skoru gösterir:
-  - **AbuseIPDB** (önerilen, gerçekten ücretsiz: 1k/gün, sadece email signup) — abuseConfidenceScore + rapor sayısı + son raporlanma tarihi
-  - **IPQualityScore** (paid plan gerekiyor) — fraud_score + proxy/vpn/tor/active_vpn/recent_abuse flag'leri
-  - **getipintel.net** (email ile ücretsiz, residential'larda 0 dönebilir)
+  - **getipintel.net + `oflags=r`** (ücretsiz, sadece email) — combined score + `ResidentialProxy` probability. residential proxy detection için **bu uygulamanın primary scorer'ı**
+  - **AbuseIPDB** (önerilen ek sinyal, 1k/gün ücretsiz) — abuseConfidenceScore + 365-günlük rapor geçmişi
+  - **IPQualityScore** (paid plan) — opsiyonel, varsa fraud_score
 - Eşzamanlı IP tespiti (5 paralel)
-- Akıllı throttling: getipintel için 4.5s, IPQS/AbuseIPDB için 300ms
-- IPQS account-level hatalarda batch durmaz, AbuseIPDB ile devam eder
-- CSV export: tüm sinyaller, latency, AbuseIPDB detayları, scoreSources breakdown
-- Renkli skor + chip'li tip göstergesi (Proxy/VPN/Tor/Abuse/Hosting/Mobile/Residential + abuse rapor sayısı)
+- Akıllı throttling: getipintel için 4.5s (15/dk limiti), AbuseIPDB/IPQS için 300ms
+- CSV export: tüm sinyaller, latency, residentialProxy %, AbuseIPDB detayları, scoreSources breakdown
+- Renkli skor + chip'li tip göstergesi (Proxy/VPN/Tor/Abuse/Hosting/Mobile/Residential Proxy %)
 
 ## Kurulum
 
@@ -26,9 +25,9 @@ npm start
 
 ## Kullanım
 
-1. **AbuseIPDB API key** al (önerilen): https://www.abuseipdb.com/register — 1000/gün ücretsiz, sadece email signup. Burned residential proxy'leri yakalar.
-2. (Opsiyonel) **IPQualityScore API key** — paid plan, residential detection için en iyi
-3. (Opsiyonel) **Contact email** — getipintel için
+1. **Contact email** gir (zorunlu önerilen) — getipintel.net'in residential proxy detection'ı için. Hesap açmaya gerek yok, sadece email lazım.
+2. (Opsiyonel) **AbuseIPDB API key** — https://www.abuseipdb.com/register ücretsiz signup, abuse rapor geçmişi sinyali
+3. (Opsiyonel) **IPQualityScore API key** — paid plan
 4. Proxy listesini yapıştır. Her satıra bir proxy. Format örnekleri:
    ```
    socks5://kullanici:sifre@host.example.com:10000
@@ -48,20 +47,29 @@ npm start
 
 Ek olarak şu flag'ler tek başlarına da kırmızı VPN/Proxy etiketi tetikler: `proxy`, `vpn`, `tor`, `active_vpn`, `recent_abuse`.
 
-## Residential proxy detection neden zor?
+## getipintel `oflags=r` notu
 
-Residential proxy servisleri (gonzoproxy, brightdata, oxylabs vb.) gerçek konut IP'leri (Sky, Comcast, Vodafone müşteri bağlantıları) kullanır. Bu IP'ler tipik olarak:
-- getipintel: 0
-- proxycheck.io (anahtarsız): risk 0
-- ip-api: proxy=false
-- Spamhaus / DNSBL'ler: temiz
+getipintel.net'in `oflags=r` parametresi olmadan residential proxy detection sinyali **kapalı** — gonzoproxy/brightdata gibi servisler için varsayılan modda `0` döner. Doğru endpoint:
 
-Çünkü asıl IP **gerçek bir konut bağlantısı**. Tek pratik sinyaller:
-1. **AbuseIPDB** — IP daha önce abuse edilmiş mi (residential proxy'ler "burned" olunca raporlanır)
-2. **IPQualityScore** (paid) — davranışsal/ML temelli detection, residential proxy ağlarını ML ile tanıyor
-3. **Latency** — yavaş proxy = aşırı kullanılan/burned proxy
+```
+https://check.getipintel.net/check.php?ip=X&contact=Y&format=json&oflags=r
+```
 
-Bu uygulama 1+3'ü ücretsiz veriyor; 2 paid hesap gerektiriyor.
+Cevapta iki alan döner:
+- `result`: combined score (badIP + VPN + residential, 0-1)
+- `ResidentialProxy`: sadece residential proxy probability (0-1)
+
+Uygulama bunu otomatik kullanıyor.
+
+## Skor sinyalleri özet
+
+| Sinyal | Maliyet | Ne yakalar |
+|---|---|---|
+| getipintel + oflags=r | Ücretsiz (email) | Residential proxy + VPN + blacklist (combined) |
+| AbuseIPDB | Ücretsiz (1k/gün, signup) | Spam/bot/scan rapor geçmişi |
+| ip-api | Ücretsiz (45/dk) | Proxy/hosting/mobile boolean'ları |
+| Latency | Ücretsiz | Yavaş proxy = burned/aşırı kullanılan |
+| IPQualityScore | Paid | ML-based residential ağı tanıma |
 
 ## Notlar
 

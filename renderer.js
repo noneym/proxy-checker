@@ -151,6 +151,12 @@ function renderTypeChips(d) {
   if (d.isRecentAbuse)
     chips.push('<span class="chip chip-proxy" title="Son zamanlarda kötüye kullanım">Abuse</span>');
   if (d.isBot) chips.push('<span class="chip chip-proxy">Bot</span>');
+  // Residential proxy probability from getipintel oflags=r
+  if (typeof d.residentialScore === 'number' && d.residentialScore >= 30) {
+    chips.push(
+      `<span class="chip chip-proxy" title="getipintel ResidentialProxy: ${d.residentialScore.toFixed(0)}%">Residential Proxy ${d.residentialScore.toFixed(0)}%</span>`
+    );
+  }
   if (d.isHosting) chips.push('<span class="chip chip-hosting">Hosting</span>');
   if (d.isMobile) chips.push('<span class="chip chip-mobile">Mobile</span>');
   if (typeof d.abuseReports === 'number' && d.abuseReports > 0) {
@@ -190,9 +196,16 @@ function renderStatus(d) {
   const hasScore =
     typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0;
 
-  // Hard fail: any explicit proxy/vpn/tor/abuse flag OR very high score
+  // Hard fail: any explicit proxy/vpn/tor/abuse flag OR very high score OR
+  // strong getipintel residential proxy signal
   const hardFlag =
-    d.isProxy || d.isVpn || d.isTor || d.isActiveVpn || d.isRecentAbuse;
+    d.isProxy ||
+    d.isVpn ||
+    d.isTor ||
+    d.isActiveVpn ||
+    d.isRecentAbuse ||
+    d.isResidentialProxy ||
+    (typeof d.residentialScore === 'number' && d.residentialScore >= 50);
   if (hardFlag || (hasScore && d.score >= 85))
     return '<span class="badge badge-bad">VPN/Proxy</span>';
 
@@ -317,6 +330,7 @@ els.exportBtn.addEventListener('click', async () => {
     'AbuseReports',
     'AbuseLastReportedAt',
     'AbuseUsageType',
+    'ResidentialProxyPct',
     'Score',
     'ScoreProvider',
     'AllScores',
@@ -351,6 +365,7 @@ els.exportBtn.addEventListener('click', async () => {
       typeof d.abuseReports === 'number' ? d.abuseReports : '',
       d.abuseLastReportedAt || '',
       d.abuseUsageType || '',
+      typeof d.residentialScore === 'number' ? d.residentialScore.toFixed(0) : '',
       typeof d.score === 'number' ? d.score.toFixed(2) : '',
       d.scoreProvider || '',
       allScores,

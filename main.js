@@ -141,29 +141,39 @@ async function getIpApiInfo(ip) {
 }
 
 async function getGetIpIntelScore(ip, contact) {
+  // oflags=r unlocks residential proxy detection — without it the `result`
+  // field excludes residential proxy signal and silently returns 0 for
+  // services like gonzoproxy/brightdata. With it: `result` becomes a combined
+  // score (badIP + VPN + residential) and a separate ResidentialProxy field
+  // (0-1) gives the residential-specific probability.
   const url = `https://check.getipintel.net/check.php?ip=${encodeURIComponent(
     ip
-  )}&contact=${encodeURIComponent(contact)}&format=json`;
+  )}&contact=${encodeURIComponent(contact)}&format=json&oflags=r`;
   const res = await httpGet(url, { timeoutMs: 30000 });
   const raw = (res.body || '').trim();
   let score = NaN;
   let apiStatus = 'unknown';
+  let residential = null;
   try {
     const data = JSON.parse(raw);
     apiStatus = data.status || 'unknown';
     if (apiStatus === 'success') {
       score = parseFloat(data.result);
+      if (data.ResidentialProxy !== undefined && data.ResidentialProxy !== null) {
+        const r = parseFloat(data.ResidentialProxy);
+        if (Number.isFinite(r) && r >= 0) residential = r * 100;
+      }
     }
   } catch (e) {
     score = parseFloat(raw);
     apiStatus = Number.isNaN(score) ? 'error' : 'success';
   }
-  // Normalize getipintel score (0-1 float) to 0-100 percentage for consistency.
   const score100 = Number.isFinite(score) && score >= 0 ? score * 100 : NaN;
   return {
     provider: 'getipintel',
     score: score100,
     rawScore: score,
+    residentialScore: residential,
     raw,
     apiStatus,
     httpStatus: res.status,
@@ -458,6 +468,14 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
           candidates.push({ provider: 'getipintel', score: r.score });
         } else {
           lastErr = r.error || `getipintel: ${r.raw}`;
+        }
+        // Capture residential proxy signal separately (from oflags=r)
+        if (typeof r.residentialScore === 'number') {
+          result.residentialScore = r.residentialScore;
+          if (r.residentialScore >= 30) {
+            // Strong residential proxy signal — also treat as a hard proxy flag
+            result.isResidentialProxy = true;
+          }
         }
       } catch (e) {
         lastErr = `getipintel: ${e.message || e}`;

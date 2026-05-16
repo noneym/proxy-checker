@@ -18,22 +18,25 @@
         </div>
         <div class="key-fields">
           <div class="field">
+            <label for="email">
+              Contact email
+              <span class="field-help">(getipintel — residential proxy detection, ücretsiz)</span>
+            </label>
+            <input id="email" type="email" placeholder="email@example.com" />
+          </div>
+          <div class="field">
             <label for="abuse-key">
               AbuseIPDB API key
               <a class="field-help" href="https://www.abuseipdb.com/register" target="_blank" rel="noopener">1k/gün ücretsiz →</a>
             </label>
-            <input id="abuse-key" type="text" placeholder="abuse confidence score için (önerilen)" />
+            <input id="abuse-key" type="text" placeholder="abuse history sinyali için (opsiyonel)" />
           </div>
           <div class="field">
             <label for="ipqs-key">
               IPQualityScore API key
               <a class="field-help" href="https://www.ipqualityscore.com/create-account" target="_blank" rel="noopener">paid →</a>
             </label>
-            <input id="ipqs-key" type="text" placeholder="varsa fraud_score (residential detection)" />
-          </div>
-          <div class="field">
-            <label for="email">Contact email <span class="muted">(getipintel için)</span></label>
-            <input id="email" type="email" placeholder="email@example.com" />
+            <input id="ipqs-key" type="text" placeholder="(opsiyonel)" />
           </div>
         </div>
       </header>
