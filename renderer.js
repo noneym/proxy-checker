@@ -103,19 +103,31 @@ function updateRow(index, patch) {
   // Type cell (proxy/hosting/mobile/residential chips)
   cells[5].innerHTML = renderTypeChips(d);
 
-  // Score cell with color (all providers normalized to 0-100)
+  // Score cell with color (all providers normalized to 0-100). For getipintel
+  // the primary score is ResidentialProxy probability; the combined result is
+  // surfaced in the tooltip for transparency.
   const scoreCell = cells[6];
   if (typeof d.score === 'number' && !Number.isNaN(d.score) && d.score >= 0) {
-    const providerLabels = { ipqs: 'IPQS', getipintel: 'gII', abuseipdb: 'AbuseIPDB' };
+    const providerLabels = {
+      ipqs: 'IPQS fraud',
+      getipintel: 'gII residential',
+      abuseipdb: 'AbuseIPDB',
+    };
     const top = providerLabels[d.scoreProvider] || d.scoreProvider;
     scoreCell.textContent = `${d.score.toFixed(0)} / 100`;
+    const titleParts = [];
     if (Array.isArray(d.scoreSources) && d.scoreSources.length > 0) {
-      scoreCell.title = d.scoreSources
-        .map((s) => `${providerLabels[s.provider] || s.provider}: ${s.score.toFixed(0)}`)
-        .join(' • ') + ` (en yüksek: ${top})`;
-    } else {
-      scoreCell.title = top || '';
+      titleParts.push(
+        d.scoreSources
+          .map((s) => `${providerLabels[s.provider] || s.provider}: ${s.score.toFixed(0)}`)
+          .join(' • ')
+      );
     }
+    if (typeof d.combinedScore === 'number') {
+      titleParts.push(`gII combined: ${d.combinedScore.toFixed(0)}`);
+    }
+    titleParts.push(`en yüksek: ${top}`);
+    scoreCell.title = titleParts.join(' • ');
     scoreCell.className = 'col-score ' + scoreClass(d.score);
   } else {
     scoreCell.textContent = '—';
@@ -331,6 +343,7 @@ els.exportBtn.addEventListener('click', async () => {
     'AbuseLastReportedAt',
     'AbuseUsageType',
     'ResidentialProxyPct',
+    'GetIpIntelCombinedPct',
     'Score',
     'ScoreProvider',
     'AllScores',
@@ -366,6 +379,7 @@ els.exportBtn.addEventListener('click', async () => {
       d.abuseLastReportedAt || '',
       d.abuseUsageType || '',
       typeof d.residentialScore === 'number' ? d.residentialScore.toFixed(0) : '',
+      typeof d.combinedScore === 'number' ? d.combinedScore.toFixed(0) : '',
       typeof d.score === 'number' ? d.score.toFixed(2) : '',
       d.scoreProvider || '',
       allScores,

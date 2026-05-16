@@ -141,39 +141,46 @@ async function getIpApiInfo(ip) {
 }
 
 async function getGetIpIntelScore(ip, contact) {
-  // oflags=r unlocks residential proxy detection — without it the `result`
-  // field excludes residential proxy signal and silently returns 0 for
-  // services like gonzoproxy/brightdata. With it: `result` becomes a combined
-  // score (badIP + VPN + residential) and a separate ResidentialProxy field
-  // (0-1) gives the residential-specific probability.
+  // oflags=r returns two fields:
+  //   result          — combined VPN/badIP/residential score (0-1)
+  //   ResidentialProxy — residential-proxy-specific probability (0-1)
+  // For residential proxy checking we want the latter as the primary score.
   const url = `https://check.getipintel.net/check.php?ip=${encodeURIComponent(
     ip
   )}&contact=${encodeURIComponent(contact)}&format=json&oflags=r`;
   const res = await httpGet(url, { timeoutMs: 30000 });
   const raw = (res.body || '').trim();
-  let score = NaN;
+  let combined = NaN;
+  let residential = NaN;
   let apiStatus = 'unknown';
-  let residential = null;
   try {
     const data = JSON.parse(raw);
     apiStatus = data.status || 'unknown';
     if (apiStatus === 'success') {
-      score = parseFloat(data.result);
+      combined = parseFloat(data.result);
       if (data.ResidentialProxy !== undefined && data.ResidentialProxy !== null) {
-        const r = parseFloat(data.ResidentialProxy);
-        if (Number.isFinite(r) && r >= 0) residential = r * 100;
+        residential = parseFloat(data.ResidentialProxy);
       }
     }
   } catch (e) {
-    score = parseFloat(raw);
-    apiStatus = Number.isNaN(score) ? 'error' : 'success';
+    combined = parseFloat(raw);
+    apiStatus = Number.isNaN(combined) ? 'error' : 'success';
   }
-  const score100 = Number.isFinite(score) && score >= 0 ? score * 100 : NaN;
+  // Primary score = ResidentialProxy when available, else combined result.
+  // Normalize 0-1 → 0-100 for the unified score scale.
+  const primary = Number.isFinite(residential) && residential >= 0
+    ? residential
+    : combined;
+  const score100 = Number.isFinite(primary) && primary >= 0 ? primary * 100 : NaN;
+  const combined100 =
+    Number.isFinite(combined) && combined >= 0 ? combined * 100 : null;
+  const residential100 =
+    Number.isFinite(residential) && residential >= 0 ? residential * 100 : null;
   return {
     provider: 'getipintel',
     score: score100,
-    rawScore: score,
-    residentialScore: residential,
+    combinedScore: combined100,
+    residentialScore: residential100,
     raw,
     apiStatus,
     httpStatus: res.status,
@@ -465,17 +472,17 @@ ipcMain.handle('check-proxies', async (event, { lines, contact, ipqsKey, abuseKe
       try {
         const r = await getGetIpIntelScore(ipData.ip, contact);
         if (r.apiStatus === 'success' && Number.isFinite(r.score)) {
+          // Score here = ResidentialProxy probability (preferred) or combined.
           candidates.push({ provider: 'getipintel', score: r.score });
         } else {
           lastErr = r.error || `getipintel: ${r.raw}`;
         }
-        // Capture residential proxy signal separately (from oflags=r)
         if (typeof r.residentialScore === 'number') {
           result.residentialScore = r.residentialScore;
-          if (r.residentialScore >= 30) {
-            // Strong residential proxy signal — also treat as a hard proxy flag
-            result.isResidentialProxy = true;
-          }
+          if (r.residentialScore >= 30) result.isResidentialProxy = true;
+        }
+        if (typeof r.combinedScore === 'number') {
+          result.combinedScore = r.combinedScore;
         }
       } catch (e) {
         lastErr = `getipintel: ${e.message || e}`;
