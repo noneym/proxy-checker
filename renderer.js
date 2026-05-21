@@ -11,6 +11,10 @@ const els = {
   counter: document.getElementById('counter'),
   progressFill: document.getElementById('progress-fill'),
   resultsBody: document.getElementById('results-body'),
+  resultsCard: document.getElementById('results-card'),
+  countAll: document.getElementById('count-all'),
+  countUsable: document.getElementById('count-usable'),
+  countBad: document.getElementById('count-bad'),
 };
 
 // Restore saved settings
@@ -29,6 +33,22 @@ els.skipReported.addEventListener('change', () => {
 
 // Clean up the old IPQS key from localStorage if present (legacy)
 localStorage.removeItem('ipqsApiKey');
+
+// Tab filter wiring — toggles data-filter on the results card; CSS hides
+// rows whose data-bucket doesn't match. State persists in localStorage.
+const savedFilter = localStorage.getItem('resultsFilter') || 'all';
+setActiveTab(savedFilter);
+document.querySelectorAll('.results-tabs .tab').forEach((tabEl) => {
+  tabEl.addEventListener('click', () => setActiveTab(tabEl.dataset.filter));
+});
+
+function setActiveTab(filter) {
+  els.resultsCard.dataset.filter = filter;
+  document.querySelectorAll('.results-tabs .tab').forEach((t) => {
+    t.classList.toggle('tab-active', t.dataset.filter === filter);
+  });
+  localStorage.setItem('resultsFilter', filter);
+}
 
 // Live proxy count
 function updateProxyCount() {
@@ -65,6 +85,31 @@ function clearResults() {
   setProgress(0, 1);
   setStatus('Hazır.');
   setCounter('');
+  refreshTabCounts();
+}
+
+function computeBucket(d) {
+  if (d.status === 'proxy-error' || d.status === 'score-error' || d.status === 'skipped-reported') {
+    return 'bad';
+  }
+  if (d.status === 'ok') {
+    return (typeof d.score === 'number' && d.score >= 100) ? 'bad' : 'usable';
+  }
+  return 'pending';
+}
+
+function refreshTabCounts() {
+  let all = 0, usable = 0, bad = 0;
+  rows.forEach((row) => {
+    if (!row) return;
+    all++;
+    const bucket = row.tr.dataset.bucket;
+    if (bucket === 'usable') usable++;
+    else if (bucket === 'bad') bad++;
+  });
+  els.countAll.textContent = String(all);
+  els.countUsable.textContent = String(usable);
+  els.countBad.textContent = String(bad);
 }
 
 function ensureRow(index, proxyRaw) {
@@ -74,6 +119,7 @@ function ensureRow(index, proxyRaw) {
   if (empty) empty.remove();
   const tr = document.createElement('tr');
   tr.dataset.index = String(index);
+  tr.dataset.bucket = 'pending';
   tr.innerHTML = `
     <td class="col-num">${index + 1}</td>
     <td class="col-proxy">${escapeHtml(proxyRaw)}</td>
@@ -87,6 +133,7 @@ function ensureRow(index, proxyRaw) {
   els.resultsBody.appendChild(tr);
   const row = { tr, data: { index, raw: proxyRaw } };
   rows[index] = row;
+  refreshTabCounts();
   return row;
 }
 
@@ -140,6 +187,13 @@ function updateRow(index, patch) {
   // Status badge
   const statusCell = cells[7];
   statusCell.innerHTML = renderStatus(d);
+
+  // Update filter bucket + refresh counts
+  const newBucket = computeBucket(d);
+  if (row.tr.dataset.bucket !== newBucket) {
+    row.tr.dataset.bucket = newBucket;
+    refreshTabCounts();
+  }
 }
 
 function renderIpCell(d) {

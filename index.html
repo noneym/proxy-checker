@@ -70,7 +70,18 @@
         </div>
       </section>
 
-      <section class="results-card">
+      <section class="results-card" id="results-card" data-filter="all">
+        <div class="results-tabs">
+          <button class="tab tab-active" data-filter="all">
+            Tümü <span class="tab-count" id="count-all">0</span>
+          </button>
+          <button class="tab" data-filter="usable" title="Sadece kullanılabilir (status=ok ve skor &lt; 100) proxy'leri göster">
+            Kullanılabilir <span class="tab-count" id="count-usable">0</span>
+          </button>
+          <button class="tab" data-filter="bad" title="Sadece elenmiş, atlanmış veya hatalı olanları göster">
+            Elenenler <span class="tab-count" id="count-bad">0</span>
+          </button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
