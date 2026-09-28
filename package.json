@@ -1,16 +1,72 @@
 {
   "name": "proxy-checker",
   "version": "1.0.0",
-  "description": "Proxy/VPN IP score checker using getipintel.net",
+  "description": "Proxy/VPN IP score checker using getipintel.net + AbuseIPDB",
   "main": "main.js",
-  "author": "berksay",
+  "author": {
+    "name": "berksay",
+    "email": "berkca@gmail.com"
+  },
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "build": "electron-builder --win --x64",
+    "build:installer": "electron-builder --win nsis --x64",
+    "build:portable": "electron-builder --win portable --x64",
+    "postinstall": "electron-builder install-app-deps"
   },
   "devDependencies": {
-    "electron": "^28.2.0"
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.3"
   },
   "dependencies": {
     "socks-proxy-agent": "^8.0.2"
+  },
+  "build": {
+    "appId": "com.berksay.proxychecker",
+    "productName": "Proxy Checker",
+    "copyright": "Copyright © 2026 berksay",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build-assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "style.css",
+      "package.json",
+      "!**/{.DS_Store,.git,.gitignore,.eslintrc,README.md}",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}-${ext}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Proxy Checker",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
   }
 }

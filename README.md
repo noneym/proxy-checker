@@ -23,6 +23,22 @@ npm install
 npm start
 ```
 
+## Windows exe olarak paketleme
+
+```bash
+npm run build             # NSIS installer + portable exe (varsayılan)
+npm run build:installer   # sadece kurulum (Setup.exe)
+npm run build:portable    # sadece tek dosya portable exe
+```
+
+Çıktılar `dist/` klasöründe:
+- `Proxy Checker-Setup-1.0.0.exe` — kurulum wizard'ı, Program Files'a kurar, kısayol ekler
+- `Proxy Checker-1.0.0-portable.exe` — tek dosya, kurulum gerektirmez, çift tıkla çalışır
+
+**Not:** Kod imzalanmadığı için ilk çalıştırmada Windows SmartScreen uyarısı çıkar ("More info" → "Run anyway"). İmzalamak için Authenticode sertifikası (~$100/yıl) gerekir; kişisel kullanımda gerekmez.
+
+Custom ikon için `build-assets/icon.ico` (256x256) koyabilirsin — electron-builder otomatik kullanır.
+
 ## Kullanım
 
 1. **Contact email** gir — getipintel.net residential proxy detection için. Hesap açmaya gerek yok, sadece email lazım.
